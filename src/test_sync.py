@@ -1,13 +1,16 @@
 import json
+import os
 import unittest
 from datetime import datetime, timezone
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 from urllib.error import HTTPError
 
 from mbox import parse_mbox
 from sync import (
+    MAILING_LISTS,
     bulk_index,
     get_latest_date,
+    lambda_handler,
     month_range,
     parse_date,
     resolve_start,
@@ -228,6 +231,37 @@ class TestBulkIndex(unittest.TestCase):
         second_req = second_call[0][0]
         second_lines = second_req.data.decode().strip().split("\n")
         self.assertEqual(len(second_lines), 2)
+
+
+class TestLambdaHandler(unittest.TestCase):
+    @patch("sync.seed_list")
+    @patch.dict(os.environ, {"ES_URL": "http://es:9200"})
+    def test_calls_seed_list_for_each_mailing_list(self, mock_seed):
+        lambda_handler({}, None)
+        self.assertEqual(mock_seed.call_count, len(MAILING_LISTS))
+        for list_name in MAILING_LISTS:
+            mock_seed.assert_any_call(list_name, "http://es:9200", "openjdk-mail", start_ym=None)
+
+    @patch("sync.seed_list")
+    @patch.dict(os.environ, {"ES_URL": "http://es:9200", "INDEX_NAME": "custom-index"})
+    def test_custom_index_name(self, mock_seed):
+        lambda_handler({}, None)
+        for c in mock_seed.call_args_list:
+            self.assertEqual(c, call(c[0][0], "http://es:9200", "custom-index", start_ym=None))
+
+    @patch("sync.seed_list")
+    @patch.dict(os.environ, {}, clear=True)
+    def test_missing_es_url_raises(self, mock_seed):
+        with self.assertRaises(KeyError):
+            lambda_handler({}, None)
+        mock_seed.assert_not_called()
+
+    @patch("sync.seed_list")
+    @patch.dict(os.environ, {"ES_URL": "http://es:9200"})
+    def test_default_index_name(self, mock_seed):
+        lambda_handler({}, None)
+        for c in mock_seed.call_args_list:
+            self.assertEqual(c[0][2], "openjdk-mail")
 
 
 if __name__ == "__main__":

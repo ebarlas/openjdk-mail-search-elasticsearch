@@ -5,15 +5,20 @@ On first run (no existing records), downloads all available months.
 On subsequent runs, re-downloads from the month of the latest indexed
 record onward, filling any gaps idempotently.
 
-Usage:
+CLI usage:
     python sync.py amber-dev
     python sync.py amber-dev --es-url http://localhost:9200 --index openjdk-mail
     python sync.py amber-dev --start 2024-01
+
+Lambda usage:
+    Handler: sync.lambda_handler
+    Environment: ES_URL (required), INDEX_NAME (optional, default: openjdk-mail)
 """
 
 import argparse
 import json
-import sys
+import logging
+import os
 import time
 from datetime import datetime, timezone
 from email.utils import parseaddr, parsedate_to_datetime
@@ -21,6 +26,8 @@ from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
 from mbox import body_text, build_export_url, download_mbox, parse_mbox
+
+logger = logging.getLogger(__name__)
 
 BULK_BATCH_SIZE = 500
 ORIGIN_YEAR, ORIGIN_MONTH = 2007, 1
@@ -143,7 +150,7 @@ def bulk_index(es_url, index_name, docs):
                 action_result = item.get("index", {})
                 if action_result.get("error"):
                     total_err += 1
-                    print(f"  error: {action_result['error']['reason']}", file=sys.stderr)
+                    logger.error("bulk index error: %s", action_result['error']['reason'])
                 else:
                     total_ok += 1
         else:
@@ -174,12 +181,14 @@ def seed_list(list_name, es_url, index_name, start_ym):
     if start_ym:
         months = month_range(start_ym[0], start_ym[1])
         if start_day > 1:
-            print(f"Syncing {list_name} from {start_ym[0]}-{start_ym[1]:02d}-{start_day:02d}, {len(months)} months")
+            logger.info("Syncing %s from %d-%02d-%02d, %d months",
+                        list_name, start_ym[0], start_ym[1], start_day, len(months))
         else:
-            print(f"Syncing {list_name} from {start_ym[0]}-{start_ym[1]:02d}, {len(months)} months")
+            logger.info("Syncing %s from %d-%02d, %d months",
+                        list_name, start_ym[0], start_ym[1], len(months))
     else:
         months = month_range(ORIGIN_YEAR, ORIGIN_MONTH)
-        print(f"Full seed for {list_name}, {len(months)} months")
+        logger.info("Full seed for %s, %d months", list_name, len(months))
 
     cumulative = 0
     t_start = time.monotonic()
@@ -192,11 +201,11 @@ def seed_list(list_name, es_url, index_name, start_ym):
         try:
             raw, compressed_size, dl_elapsed = download_mbox(url)
         except Exception as e:
-            print(f"  {year}-{month:02d}: download failed: {e}", file=sys.stderr)
+            logger.error("%d-%02d: download failed: %s", year, month, e)
             continue
 
         if not raw:
-            print(f"  {year}-{month:02d}: empty")
+            logger.info("%d-%02d: empty", year, month)
             continue
 
         messages = parse_mbox(raw)
@@ -213,17 +222,62 @@ def seed_list(list_name, es_url, index_name, start_ym):
         cumulative += ok
         elapsed = time.monotonic() - t_start
 
-        print(
-            f"  {year}-{month:02d}: "
-            f"{len(messages)} parsed, {ok} indexed, {err} errors, {skipped} skipped | "
-            f"cumulative: {cumulative} | {elapsed:.0f}s"
+        logger.info(
+            "%d-%02d: %d parsed, %d indexed, %d errors, %d skipped | cumulative: %d | %.0fs",
+            year, month, len(messages), ok, err, skipped, cumulative, elapsed,
         )
 
     total_elapsed = time.monotonic() - t_start
-    print(f"\nDone. {cumulative} documents indexed in {total_elapsed:.0f}s")
+    logger.info("Done %s. %d documents indexed in %.0fs", list_name, cumulative, total_elapsed)
+
+
+MAILING_LISTS = [
+    'amber-dev',
+    'amber-spec-experts',
+    'babylon-dev',
+    'classfile-api-dev',
+    'client-libs-dev',
+    'compiler-dev',
+    'core-libs-dev',
+    'crac-dev',
+    'discuss',
+    'graal-dev',
+    'javadoc-dev',
+    'jdk-dev',
+    'jextract-dev',
+    'jigsaw-dev',
+    'jmh-dev',
+    'leyden-dev',
+    'lilliput-dev',
+    'loom-dev',
+    'mobile-dev',
+    'net-dev',
+    'nio-dev',
+    'openjfx-dev',
+    'panama-dev',
+    'quality-discuss',
+    'valhalla-dev',
+    'valhalla-spec-comments',
+    'valhalla-spec-experts',
+]
+
+
+def lambda_handler(event, context):
+    logging.basicConfig(
+        level=logging.INFO,
+        format='[%(asctime)s] %(levelname)s %(name)s - %(message)s',
+    )
+    es_url = os.environ['ES_URL']
+    index_name = os.environ.get('INDEX_NAME', 'openjdk-mail')
+    for list_name in MAILING_LISTS:
+        seed_list(list_name, es_url, index_name, start_ym=None)
 
 
 def main():
+    logging.basicConfig(
+        level=logging.INFO,
+        format='[%(asctime)s] %(levelname)s %(name)s - %(message)s',
+    )
     parser = argparse.ArgumentParser(description="Seed/sync ES index from HyperkItty mbox archives")
     parser.add_argument("list_name", help="Mailing list name, e.g. amber-dev")
     parser.add_argument("--es-url", default="http://localhost:9200", help="Elasticsearch URL")
