@@ -36,6 +36,11 @@ class TestBuildExportUrl(unittest.TestCase):
         self.assertIn("start=2024-12-01", url)
         self.assertIn("end=2025-01-01", url)
 
+    def test_custom_start_day(self):
+        url = build_export_url("amber-dev", 2024, 3, start_day=15)
+        self.assertIn("start=2024-03-15", url)
+        self.assertIn("end=2024-04-01", url)
+
 
 class TestParseMbox(unittest.TestCase):
     def test_two_messages(self):

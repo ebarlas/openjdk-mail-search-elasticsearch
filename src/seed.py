@@ -150,11 +150,11 @@ def bulk_index(es_url, index_name, docs):
 
 
 def resolve_start(list_name, es_url, index_name):
-    """Determine the starting (year, month) based on the latest indexed record."""
+    """Determine the starting (year, month, day) based on the latest indexed record."""
     latest = get_latest_date(es_url, index_name, list_name)
     if latest is None:
         return None
-    return (latest.year, latest.month)
+    return (latest.year, latest.month, latest.day)
 
 
 def seed_list(list_name, es_url, index_name, start_ym):
@@ -162,21 +162,34 @@ def seed_list(list_name, es_url, index_name, start_ym):
     months = discover_months(list_name)
     print(f"Found {len(months)} months ({months[0][0]}-{months[0][1]:02d} to {months[-1][0]}-{months[-1][1]:02d})")
 
+    start_day = 1
     if start_ym is None:
-        start_ym = resolve_start(list_name, es_url, index_name)
+        resolved = resolve_start(list_name, es_url, index_name)
+        if resolved:
+            start_ym = (resolved[0], resolved[1])
+            start_day = resolved[2]
+    elif len(start_ym) == 3:
+        start_day = start_ym[2]
+        start_ym = (start_ym[0], start_ym[1])
 
     if start_ym:
         full_count = len(months)
         months = [(y, m) for y, m in months if (y, m) >= start_ym]
-        print(f"Starting from {start_ym[0]}-{start_ym[1]:02d}, {len(months)} of {full_count} months")
+        if start_day > 1:
+            print(f"Starting from {start_ym[0]}-{start_ym[1]:02d}-{start_day:02d}, {len(months)} of {full_count} months")
+        else:
+            print(f"Starting from {start_ym[0]}-{start_ym[1]:02d}, {len(months)} of {full_count} months")
     else:
         print("No existing records, full seed")
 
     cumulative = 0
     t_start = time.monotonic()
+    is_first = True
 
     for year, month in months:
-        url = build_export_url(list_name, year, month)
+        day = start_day if is_first else 1
+        is_first = False
+        url = build_export_url(list_name, year, month, start_day=day)
         try:
             raw, compressed_size, dl_elapsed = download_mbox(url)
         except Exception as e:

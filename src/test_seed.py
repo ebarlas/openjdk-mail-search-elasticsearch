@@ -158,7 +158,7 @@ class TestResolveStart(unittest.TestCase):
     @patch("seed.get_latest_date")
     def test_with_date(self, mock_latest):
         mock_latest.return_value = datetime(2024, 6, 15, tzinfo=timezone.utc)
-        self.assertEqual(resolve_start("test", "http://fake", "idx"), (2024, 6))
+        self.assertEqual(resolve_start("test", "http://fake", "idx"), (2024, 6, 15))
 
     @patch("seed.get_latest_date")
     def test_no_records(self, mock_latest):

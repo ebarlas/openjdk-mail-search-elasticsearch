@@ -12,14 +12,14 @@ from urllib.request import Request, urlopen
 ARCHIVES_BASE = "https://mail.openjdk.org/archives/list"
 
 
-def build_export_url(list_name, year, month):
+def build_export_url(list_name, year, month, start_day=1):
     fqlist = f"{list_name}@openjdk.org"
     next_month = month + 1 if month < 12 else 1
     next_year = year if month < 12 else year + 1
     return (
         f"{ARCHIVES_BASE}/{fqlist}/export/"
         f"{fqlist}-{year}-{month:02d}.mbox.gz"
-        f"?start={year}-{month:02d}-01&end={next_year}-{next_month:02d}-01"
+        f"?start={year}-{month:02d}-{start_day:02d}&end={next_year}-{next_month:02d}-01"
     )
 
 
