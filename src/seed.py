@@ -13,7 +13,6 @@ Usage:
 
 import argparse
 import json
-import re
 import sys
 import time
 from datetime import datetime, timezone
@@ -21,21 +20,25 @@ from email.utils import parseaddr, parsedate_to_datetime
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
-from mbox import ARCHIVES_BASE, body_text, build_export_url, download_mbox, parse_mbox
+from mbox import body_text, build_export_url, download_mbox, parse_mbox
 
 BULK_BATCH_SIZE = 500
+ORIGIN_YEAR, ORIGIN_MONTH = 2007, 1
 
 
-def discover_months(list_name):
-    """Fetch the archive page and extract all available (year, month) pairs."""
-    fqlist = f"{list_name}@openjdk.org"
-    url = f"{ARCHIVES_BASE}/{fqlist}/"
-    req = Request(url, headers={"User-Agent": "openjdk-mail-search"})
-    with urlopen(req, timeout=30) as resp:
-        html = resp.read().decode("utf-8", errors="replace")
-    pattern = re.compile(rf"/archives/list/{re.escape(fqlist)}/(\d{{4}})/(\d{{1,2}})/")
-    months = sorted({(int(m.group(1)), int(m.group(2))) for m in pattern.finditer(html)})
-    return months
+def month_range(start_year, start_month):
+    """Generate (year, month) pairs from a start point to the current month."""
+    now = datetime.now(timezone.utc)
+    end_year, end_month = now.year, now.month
+    y, m = start_year, start_month
+    result = []
+    while (y, m) <= (end_year, end_month):
+        result.append((y, m))
+        m += 1
+        if m > 12:
+            y += 1
+            m = 1
+    return result
 
 
 def get_latest_date(es_url, index_name, list_name):
@@ -158,10 +161,6 @@ def resolve_start(list_name, es_url, index_name):
 
 
 def seed_list(list_name, es_url, index_name, start_ym):
-    print(f"Discovering months for {list_name}...")
-    months = discover_months(list_name)
-    print(f"Found {len(months)} months ({months[0][0]}-{months[0][1]:02d} to {months[-1][0]}-{months[-1][1]:02d})")
-
     start_day = 1
     if start_ym is None:
         resolved = resolve_start(list_name, es_url, index_name)
@@ -173,14 +172,14 @@ def seed_list(list_name, es_url, index_name, start_ym):
         start_ym = (start_ym[0], start_ym[1])
 
     if start_ym:
-        full_count = len(months)
-        months = [(y, m) for y, m in months if (y, m) >= start_ym]
+        months = month_range(start_ym[0], start_ym[1])
         if start_day > 1:
-            print(f"Starting from {start_ym[0]}-{start_ym[1]:02d}-{start_day:02d}, {len(months)} of {full_count} months")
+            print(f"Syncing {list_name} from {start_ym[0]}-{start_ym[1]:02d}-{start_day:02d}, {len(months)} months")
         else:
-            print(f"Starting from {start_ym[0]}-{start_ym[1]:02d}, {len(months)} of {full_count} months")
+            print(f"Syncing {list_name} from {start_ym[0]}-{start_ym[1]:02d}, {len(months)} months")
     else:
-        print("No existing records, full seed")
+        months = month_range(ORIGIN_YEAR, ORIGIN_MONTH)
+        print(f"Full seed for {list_name}, {len(months)} months")
 
     cumulative = 0
     t_start = time.monotonic()

@@ -7,8 +7,8 @@ from urllib.error import HTTPError
 from mbox import parse_mbox
 from seed import (
     bulk_index,
-    discover_months,
     get_latest_date,
+    month_range,
     parse_date,
     resolve_start,
     strip_angle_brackets,
@@ -107,17 +107,21 @@ class TestTransformMessage(unittest.TestCase):
 # --- HTTP-dependent tests (mocked) ---
 
 
-class TestDiscoverMonths(unittest.TestCase):
-    @patch("seed.urlopen")
-    def test_parses_months_from_html(self, mock_urlopen):
-        html = b"""
-        <a href="/archives/list/test-dev@openjdk.org/2024/1/">Jan</a>
-        <a href="/archives/list/test-dev@openjdk.org/2024/2/">Feb</a>
-        <a href="/archives/list/test-dev@openjdk.org/2024/12/">Dec</a>
-        """
-        mock_urlopen.return_value = mock_response(html)
-        months = discover_months("test-dev")
-        self.assertEqual(months, [(2024, 1), (2024, 2), (2024, 12)])
+class TestMonthRange(unittest.TestCase):
+    def test_single_month(self):
+        result = month_range(2026, 3)
+        self.assertIn((2026, 3), result)
+        self.assertEqual(result[0], (2026, 3))
+
+    def test_spans_year_boundary(self):
+        result = month_range(2024, 11)
+        self.assertIn((2024, 11), result)
+        self.assertIn((2024, 12), result)
+        self.assertIn((2025, 1), result)
+
+    def test_ordered(self):
+        result = month_range(2024, 1)
+        self.assertEqual(result, sorted(result))
 
 
 class TestGetLatestDate(unittest.TestCase):
