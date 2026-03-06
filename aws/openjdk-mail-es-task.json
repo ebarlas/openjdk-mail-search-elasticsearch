@@ -1,0 +1,60 @@
+{
+  "family": "openjdk-mail-es-task",
+  "networkMode": "host",
+  "requiresCompatibilities": ["EC2"],
+  "containerDefinitions": [
+    {
+      "name": "elasticsearch",
+      "image": "docker.elastic.co/elasticsearch/elasticsearch:9.3.1",
+      "essential": true,
+      "cpu": 2048,
+      "memory": 3800,
+      "portMappings": [
+        {
+          "containerPort": 9200,
+          "hostPort": 9200,
+          "protocol": "tcp"
+        }
+      ],
+      "environment": [
+        { "name": "discovery.type", "value": "single-node" },
+        { "name": "ES_JAVA_OPTS", "value": "-Xms2g -Xmx2g" },
+        { "name": "bootstrap.memory_lock", "value": "true" },
+        { "name": "xpack.security.enabled", "value": "false" }
+      ],
+      "ulimits": [
+        {
+          "name": "memlock",
+          "softLimit": -1,
+          "hardLimit": -1
+        },
+        {
+          "name": "nofile",
+          "softLimit": 65535,
+          "hardLimit": 65535
+        }
+      ],
+      "mountPoints": [
+        {
+          "sourceVolume": "es-data",
+          "containerPath": "/usr/share/elasticsearch/data"
+        }
+      ],
+      "healthCheck": {
+        "command": ["CMD-SHELL", "curl -sf http://localhost:9200/_cluster/health || exit 1"],
+        "interval": 30,
+        "timeout": 10,
+        "retries": 3,
+        "startPeriod": 60
+      }
+    }
+  ],
+  "volumes": [
+    {
+      "name": "es-data",
+      "host": {
+        "sourcePath": "/data/elasticsearch"
+      }
+    }
+  ]
+}
