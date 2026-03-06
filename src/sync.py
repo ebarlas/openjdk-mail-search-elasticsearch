@@ -6,9 +6,9 @@ On subsequent runs, re-downloads from the month of the latest indexed
 record onward, filling any gaps idempotently.
 
 Usage:
-    python seed.py amber-dev
-    python seed.py amber-dev --es-url http://localhost:9200 --index openjdk-mail
-    python seed.py amber-dev --start 2024-01
+    python sync.py amber-dev
+    python sync.py amber-dev --es-url http://localhost:9200 --index openjdk-mail
+    python sync.py amber-dev --start 2024-01
 """
 
 import argparse

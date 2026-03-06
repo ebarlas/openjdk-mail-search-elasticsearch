@@ -5,7 +5,7 @@ from unittest.mock import MagicMock, patch
 from urllib.error import HTTPError
 
 from mbox import parse_mbox
-from seed import (
+from sync import (
     bulk_index,
     get_latest_date,
     month_range,
@@ -125,7 +125,7 @@ class TestMonthRange(unittest.TestCase):
 
 
 class TestGetLatestDate(unittest.TestCase):
-    @patch("seed.urlopen")
+    @patch("sync.urlopen")
     def test_with_results(self, mock_urlopen):
         body = json.dumps({
             "aggregations": {
@@ -139,7 +139,7 @@ class TestGetLatestDate(unittest.TestCase):
         result = get_latest_date("http://fake:9200", "test-index", "test-list")
         self.assertEqual(result, datetime(2024, 1, 1, tzinfo=timezone.utc))
 
-    @patch("seed.urlopen")
+    @patch("sync.urlopen")
     def test_no_index_404(self, mock_urlopen):
         mock_urlopen.side_effect = HTTPError(
             url="http://fake:9200/test-index/_search",
@@ -148,7 +148,7 @@ class TestGetLatestDate(unittest.TestCase):
         result = get_latest_date("http://fake:9200", "test-index", "test-list")
         self.assertIsNone(result)
 
-    @patch("seed.urlopen")
+    @patch("sync.urlopen")
     def test_no_records(self, mock_urlopen):
         body = json.dumps({
             "aggregations": {"latest": {"value": None, "value_as_string": None}}
@@ -159,12 +159,12 @@ class TestGetLatestDate(unittest.TestCase):
 
 
 class TestResolveStart(unittest.TestCase):
-    @patch("seed.get_latest_date")
+    @patch("sync.get_latest_date")
     def test_with_date(self, mock_latest):
         mock_latest.return_value = datetime(2024, 6, 15, tzinfo=timezone.utc)
         self.assertEqual(resolve_start("test", "http://fake", "idx"), (2024, 6, 15))
 
-    @patch("seed.get_latest_date")
+    @patch("sync.get_latest_date")
     def test_no_records(self, mock_latest):
         mock_latest.return_value = None
         self.assertIsNone(resolve_start("test", "http://fake", "idx"))
@@ -174,7 +174,7 @@ class TestBulkIndex(unittest.TestCase):
     def test_empty(self):
         self.assertEqual(bulk_index("http://fake:9200", "idx", []), (0, 0))
 
-    @patch("seed.urlopen")
+    @patch("sync.urlopen")
     def test_success(self, mock_urlopen):
         body = json.dumps({
             "errors": False,
@@ -190,7 +190,7 @@ class TestBulkIndex(unittest.TestCase):
         ]
         self.assertEqual(bulk_index("http://fake:9200", "idx", docs), (2, 0))
 
-    @patch("seed.urlopen")
+    @patch("sync.urlopen")
     def test_partial_error(self, mock_urlopen):
         body = json.dumps({
             "errors": True,
@@ -206,8 +206,8 @@ class TestBulkIndex(unittest.TestCase):
         ]
         self.assertEqual(bulk_index("http://fake:9200", "idx", docs), (1, 1))
 
-    @patch("seed.BULK_BATCH_SIZE", 2)
-    @patch("seed.urlopen")
+    @patch("sync.BULK_BATCH_SIZE", 2)
+    @patch("sync.urlopen")
     def test_batching(self, mock_urlopen):
         body = json.dumps({"errors": False, "items": []}).encode()
         mock_urlopen.return_value = mock_response(body)
