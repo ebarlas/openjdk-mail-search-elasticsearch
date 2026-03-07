@@ -486,6 +486,7 @@
                 <th>Subject</th>
                 <th>Email</th>
                 <th class="nowrap">Date</th>
+                <th></th>
             </tr>
             </thead>
             <tbody></tbody>
@@ -497,6 +498,24 @@
 </div>
 
 <script>
+    // ---------- HyperKitty link helpers ----------
+    const B32 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
+    function base32encode(bytes) {
+        let r = '', bits = 0, val = 0;
+        for (const b of bytes) {
+            val = (val << 8) | b;
+            bits += 8;
+            while (bits >= 5) { r += B32[(val >>> (bits - 5)) & 0x1f]; bits -= 5; }
+        }
+        if (bits > 0) r += B32[(val << (5 - bits)) & 0x1f];
+        return r;
+    }
+
+    async function hyperkittyUrl(list, messageId) {
+        const hash = await crypto.subtle.digest('SHA-1', new TextEncoder().encode(messageId));
+        return `https://mail.openjdk.org/archives/list/${list}@openjdk.org/message/${base32encode(new Uint8Array(hash))}/`;
+    }
+
     // ---------- Config ----------
     const API_ROOT = 'https://openjdk.barlasgarden.com/api';
     const resultsBody = document.querySelector('#results tbody');
@@ -675,6 +694,20 @@
             timeEl.textContent = formatLocal(it.date);
             tdDate.appendChild(timeEl);
             tr.appendChild(tdDate);
+
+            // HyperKitty external link
+            const tdLink = document.createElement('td');
+            const aLink = document.createElement('a');
+            aLink.target = '_blank';
+            aLink.rel = 'noopener';
+            aLink.title = 'View on mail.openjdk.org';
+            aLink.textContent = '↗';
+            aLink.style.textDecoration = 'none';
+            if (it.id && it.list) {
+                hyperkittyUrl(it.list, it.id).then(url => { aLink.href = url; });
+            }
+            tdLink.appendChild(aLink);
+            tr.appendChild(tdLink);
 
             frag.appendChild(tr);
         }
