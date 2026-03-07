@@ -1,0 +1,951 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8"/>
+    <title>OpenJDK Mail Search</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1"/>
+    <style>
+        :root {
+            color-scheme: light dark;
+        }
+
+        * {
+            box-sizing: border-box;
+        }
+
+        body {
+            margin: 0;
+            padding: 1rem;
+            font: 14px/1.4 system-ui, -apple-system, Segoe UI, Roboto, "Helvetica Neue", Arial;
+        }
+
+        h1 {
+            font-size: 1.25rem;
+            margin: 0 0 1rem;
+        }
+
+        /* Single, consolidated card rule */
+        .card {
+            margin: 0 auto;
+            padding: 1rem;
+            border: 1px solid rgba(127, 127, 127, .25);
+            border-radius: 10px;
+            background: Canvas;
+            background-clip: padding-box;
+            overflow: hidden;
+            isolation: isolate;
+            width: 100%;
+        }
+
+        /* Form grid */
+        form {
+            display: grid;
+            gap: .75rem;
+        }
+
+        .row {
+            display: grid;
+            grid-template-columns: repeat(12, 1fr);
+            gap: inherit;
+            align-items: end;
+        }
+
+        label {
+            display: block;
+            font-weight: 600;
+            margin-bottom: .25rem;
+        }
+
+        input, select, button {
+            width: 100%;
+            padding: .5rem .6rem;
+            border-radius: 8px;
+            border: 1px solid rgba(127, 127, 127, .35);
+            background: Canvas;
+            color: inherit;
+        }
+
+        button.primary {
+            background: hsl(212 100% 50%);
+            color: #fff;
+            border: none;
+        }
+
+        button[disabled] {
+            opacity: .6;
+            cursor: not-allowed;
+        }
+
+        /* Column utilities (only the ones used) */
+        .col-3 {
+            grid-column: span 3;
+            min-width: 170px;
+        }
+
+        .col-4 {
+            grid-column: span 4;
+        }
+
+        .col-6 {
+            grid-column: span 6;
+        }
+
+        .col-12 {
+            grid-column: span 12;
+        }
+
+        /* Toolbar */
+        .toolbar {
+            display: flex;
+            gap: .5rem;
+            align-items: center;
+            justify-content: flex-end;
+        }
+
+        /* Status line */
+        .status {
+            margin-top: .5rem;
+            min-height: 1.2em;
+        }
+
+        .status[aria-busy="true"]::after {
+            content: "Loading…";
+            opacity: .8;
+        }
+
+        .error {
+            color: #b00020;
+        }
+
+        /* Results table */
+        .table-wrap {
+            margin-top: 1rem;
+            overflow: auto;
+            -webkit-overflow-scrolling: touch;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            min-width: 820px;
+        }
+
+        thead th {
+            text-align: left;
+            padding: .5rem .6rem;
+            position: sticky;
+            top: 0;
+            background: color-mix(in oklab, Canvas 85%, CanvasText 5%);
+            border-bottom: 1px solid rgba(127, 127, 127, .35);
+            z-index: 1;
+        }
+
+        tbody td {
+            padding: .45rem .6rem;
+            border-bottom: 1px solid rgba(127, 127, 127, .15);
+            vertical-align: top;
+        }
+
+        tbody tr:nth-child(odd) td {
+            background: color-mix(in oklab, Canvas 96%, CanvasText 2%);
+        }
+
+        /* SCM-sourced records (RFR: or Integrated: or Withdrawn: in subject) */
+        tbody tr.scm-source td:first-child {
+            border-left: 3px solid #2563EB;
+        }
+
+        a {
+            color: inherit;
+            text-decoration: underline;
+            text-underline-offset: 2px;
+        }
+
+        .nowrap {
+            white-space: nowrap;
+        }
+
+        .pagination {
+            display: flex;
+            justify-content: flex-end;
+            gap: .5rem;
+            margin-top: .75rem;
+        }
+
+        /* Legend for SCM-sourced records */
+        .legend {
+            margin-top: 1rem;
+            margin-bottom: 0.5rem;
+            font-size: 12px;
+            opacity: 0.75;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .legend-indicator {
+            width: 20px;
+            height: 12px;
+            border-left: 3px solid #2563EB;
+            background: rgba(37, 99, 235, 0.04);
+            border-radius: 2px;
+        }
+
+        /* Header: title left, meta (timestamps + repo) right */
+        .header-bar {
+            display: flex;
+            align-items: baseline;
+            justify-content: space-between;
+            gap: .75rem;
+            margin: 0 0 1rem;
+        }
+
+        .header-bar h1 {
+            margin: 0;
+        }
+
+        /* Meta cluster */
+        .meta {
+            display: flex;
+            align-items: center;
+            gap: .5rem;
+            flex-wrap: wrap;
+        }
+
+        .meta-status {
+            font-size: 12px;
+            opacity: .8;
+            min-height: 1.2em;
+            white-space: nowrap;
+            text-align: right;
+        }
+
+        .meta-status .sep {
+            opacity: .6;
+            margin: 0 .4rem;
+        }
+
+        /* Dot between text and icon on desktop */
+        .meta .sep-icon {
+            opacity: .6;
+            margin: 0 .35rem;
+        }
+
+        /* GitHub repo icon/link */
+        .repo-link {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 28px;
+            height: 28px;
+            border-radius: 6px;
+            text-decoration: none;
+            color: inherit;
+            opacity: .9;
+        }
+
+        .repo-link:hover {
+            opacity: 1;
+            transform: translateY(-0.5px);
+        }
+
+        .repo-link:focus-visible {
+            outline: 2px solid currentColor;
+            outline-offset: 2px;
+        }
+
+        .repo-link svg {
+            width: 20px;
+            height: 20px;
+        }
+
+        /* Visually hidden helper */
+        .sr-only {
+            position: absolute;
+            width: 1px;
+            height: 1px;
+            padding: 0;
+            margin: -1px;
+            overflow: hidden;
+            clip: rect(0, 0, 0, 0);
+            white-space: nowrap;
+            border: 0;
+        }
+
+        /* ---------------- Mobile (≤720px) ---------------- */
+        @media (max-width: 720px) {
+            body {
+                padding: 0;
+            }
+
+            .card {
+                margin: 0;
+                border-radius: 0;
+            }
+
+            .col-sm-6 {
+                grid-column: span 6;
+            }
+
+            .col-sm-12 {
+                grid-column: span 12;
+            }
+
+            form {
+                gap: .6rem;
+            }
+
+            .header-bar {
+                position: relative;
+                flex-direction: column;
+                align-items: stretch;
+            }
+
+            /* Let timestamps flow full width; keep them on two rows */
+            .meta {
+                display: block;
+                width: 100%;
+                padding-right: 2.5rem;
+            }
+
+            .meta-status {
+                display: grid;
+                grid-template-rows: auto auto;
+                gap: 2px;
+                text-align: left;
+                white-space: normal;
+            }
+
+            .meta-status .sep, .meta .sep-icon {
+                display: none;
+            }
+
+            /* Icon in the top-right corner */
+            .repo-link {
+                position: absolute;
+                top: .25rem;
+                right: .25rem;
+                width: 32px;
+                height: 32px; /* comfy tap target */
+            }
+
+            .repo-link svg {
+                width: 18px;
+                height: 18px;
+            }
+        }
+
+    </style>
+</head>
+<body>
+<div class="card">
+    <div class="header-bar">
+        <h1>OpenJDK Mail Search</h1>
+
+        <!-- Meta area: timestamps + GitHub repo link -->
+        <div class="meta">
+            <div class="meta-status" id="ingest-status">
+                <span>Last check: <time id="last-check" datetime="">—</time></span>
+                <span class="sep">•</span>
+                <span>Last update: <time id="last-update" datetime="">—</time></span>
+            </div>
+
+            <span class="sep sep-icon" aria-hidden="true">•</span>
+
+            <a class="repo-link" href="https://github.com/ebarlas/openjdk-mail-search"
+               target="_blank" rel="noopener"
+               title="View source on GitHub: ebarlas/openjdk-mail-search" aria-label="GitHub repository">
+                <!-- GitHub mark (inline SVG) -->
+                <svg viewBox="0 0 16 16" aria-hidden="true" fill="currentColor">
+                    <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38
+                     0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52
+                     -.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95
+                     0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27
+                     1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48
+                     0 1.07-.01 1.93-.01 2.19 0 .21.15.46.55.38A8.013 8.013 0 0 0 16 8c0-4.42-3.58-8-8-8z"/>
+                </svg>
+                <span class="sr-only">GitHub: ebarlas/openjdk-mail-search</span>
+            </a>
+        </div>
+    </div>
+
+    <form id="search-form" autocomplete="off">
+        <!-- Mode -->
+        <div class="row">
+            <div class="col-6 col-sm-12">
+                <label for="mode">Search Type</label>
+                <select id="mode" name="mode">
+                    <option value="list-latest">Mailing list records</option>
+                    <option value="text-search">Text search</option>
+                    <option value="author">Author search</option>
+                    <option value="email">Email search</option>
+                </select>
+            </div>
+
+            <div class="col-3 col-sm-6">
+                <label for="list">List</label>
+                <select id="list" name="list">
+                    <option value="">(any)</option>
+                    <option>amber-dev</option>
+                    <option>amber-spec-experts</option>
+                    <option>babylon-dev</option>
+                    <option>classfile-api-dev</option>
+                    <option>client-libs-dev</option>
+                    <option>compiler-dev</option>
+                    <option>core-libs-dev</option>
+                    <option>crac-dev</option>
+                    <option>discuss</option>
+                    <option>graal-dev</option>
+                    <option>javadoc-dev</option>
+                    <option>jdk-dev</option>
+                    <option>jextract-dev</option>
+                    <option>jigsaw-dev</option>
+                    <option>jmh-dev</option>
+                    <option>leyden-dev</option>
+                    <option>lilliput-dev</option>
+                    <option>loom-dev</option>
+                    <option>mobile-dev</option>
+                    <option>net-dev</option>
+                    <option>nio-dev</option>
+                    <option>openjfx-dev</option>
+                    <option>panama-dev</option>
+                    <option>quality-discuss</option>
+                    <option>valhalla-dev</option>
+                    <option>valhalla-spec-comments</option>
+                    <option>valhalla-spec-experts</option>
+                </select>
+            </div>
+
+            <div class="col-3 col-sm-6">
+                <label for="limit">Limit</label>
+                <select id="limit" name="limit">
+                    <option value="10">10</option>
+                    <option value="25" selected>25</option>
+                    <option value="50">50</option>
+                </select>
+            </div>
+        </div>
+
+        <!-- Query row (mode-specific) -->
+        <div class="row">
+            <div class="col-12" id="field-text" hidden>
+                <label for="q">Text Query</label>
+                <input id="q" name="q" placeholder="e.g., TLSv1.3 handshake"/>
+            </div>
+            <div class="col-12" id="field-author" hidden>
+                <label for="author">Author Name</label>
+                <input id="author" name="author" placeholder="e.g., Peter Parker"/>
+            </div>
+            <div class="col-12" id="field-email" hidden>
+                <label for="email">Author Email</label>
+                <input id="email" name="email" placeholder="e.g., peter.parker@marvel.com"/>
+            </div>
+        </div>
+
+        <!-- Date range + order -->
+        <div class="row">
+            <div class="col-4 col-sm-12">
+                <label for="from">From</label>
+                <input id="from" name="from" type="datetime-local" step="1"/>
+            </div>
+            <div class="col-4 col-sm-12">
+                <label for="to">To</label>
+                <input id="to" name="to" type="datetime-local" step="1"/>
+            </div>
+            <div class="col-4 col-sm-12">
+                <label for="order">Sort Order</label>
+                <select id="order" name="order">
+                    <option value="desc" selected>Newest first (desc)</option>
+                    <option value="asc">Oldest first (asc)</option>
+                </select>
+            </div>
+        </div>
+
+        <!-- Actions -->
+        <div class="row">
+            <div class="col-12 toolbar">
+                <button type="button" id="reset">Reset</button>
+                <button type="submit" class="primary" id="search">Search</button>
+            </div>
+        </div>
+
+        <div id="status" class="status" role="status" aria-live="polite"></div>
+    </form>
+
+    <div class="legend">
+        <span class="legend-indicator"></span>
+        <span>Pull request activity</span>
+    </div>
+
+    <div class="table-wrap">
+        <table id="results">
+            <thead>
+            <tr>
+                <th class="nowrap">List</th>
+                <th>Author</th>
+                <th>Subject</th>
+                <th>Email</th>
+                <th class="nowrap">Date</th>
+                <th class="nowrap">Month</th>
+                <th class="nowrap">ID</th>
+            </tr>
+            </thead>
+            <tbody></tbody>
+        </table>
+        <div class="pagination">
+            <button id="next" hidden>Load More →</button>
+        </div>
+    </div>
+</div>
+
+<script>
+    // ---------- Config ----------
+    const API_ROOT = 'https://openjdk.barlasgarden.com/api';
+    const resultsBody = document.querySelector('#results tbody');
+    const nextBtn = document.querySelector('#next');
+    const statusEl = document.querySelector('#status');
+    const formEl = document.getElementById('search-form');
+
+    // State of the last query (for pagination only; not tracked in URL/history)
+    let last = {url: null, cursor: null};
+
+    // ---------- Helpers ----------
+    const qs = o => Object.entries(o)
+        .filter(([, v]) => v !== undefined && v !== null && v !== '')
+        .map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(v)}`).join('&');
+
+    // --- Ingest status (last-check / last-update) ---
+    const lastCheckEl = document.getElementById('last-check');
+    const lastUpdateEl = document.getElementById('last-update');
+
+    async function refreshIngestStatus() {
+        try {
+            const res = await fetch(`${API_ROOT}/mail/status`, {headers: {'accept': 'application/json'}});
+            if (!res.ok) return; // ignore errors
+            const data = await res.json();
+
+            const lc = data && data.last_check ? String(data.last_check) : null;
+            const lu = data && data.last_update ? String(data.last_update) : null;
+
+            if (lc) {
+                lastCheckEl.dateTime = lc;
+                lastCheckEl.textContent = formatLocal(lc);
+            } else {
+                lastCheckEl.dateTime = '';
+                lastCheckEl.textContent = '—';
+            }
+
+            if (lu) {
+                lastUpdateEl.dateTime = lu;
+                lastUpdateEl.textContent = formatLocal(lu);
+            } else {
+                lastUpdateEl.dateTime = '';
+                lastUpdateEl.textContent = '—';
+            }
+        } catch {
+            // ignore any fetch/parse errors by design
+        }
+    }
+
+    function localToUtcZ(v) {
+        if (!v) return '';
+        const d = new Date(v);
+        if (isNaN(d)) return '';
+        return d.toISOString().replace(/\.\d{3}Z$/, 'Z');
+    }
+
+    function utcZToLocalInput(isoZ) {
+        if (!isoZ) return '';
+        const d = new Date(isoZ);
+        if (isNaN(d)) return '';
+        const pad = n => String(n).padStart(2, '0');
+        return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+    }
+
+    function formatLocal(dtIso) {
+        if (!dtIso) return '';
+        const d = new Date(dtIso);
+        return isNaN(d) ? dtIso : d.toLocaleString();
+    }
+
+    function setBusy(b) {
+        statusEl.setAttribute('aria-busy', b ? 'true' : 'false');
+    }
+
+    function setStatus(msg, isErr = false) {
+        statusEl.textContent = msg || '';
+        statusEl.classList.toggle('error', !!isErr);
+    }
+
+    function setListValue(list) {
+        const sel = document.getElementById('list');
+        if (!list) {
+            sel.value = '';
+            return;
+        }
+        const exists = Array.from(sel.options).some(o => o.value === list);
+        if (!exists) sel.add(new Option(list, list));
+        sel.value = list;
+    }
+
+    function openjdkLinks(item) {
+        const list = item.list;
+        const month = item.month;
+        const id = item.id;
+        const base = `https://mail.openjdk.org/pipermail/${encodeURIComponent(list)}`;
+        return {
+            list: `${base}/`,
+            month: `${base}/${encodeURIComponent(month)}/date.html`,
+            id: `${base}/${encodeURIComponent(month)}/${encodeURIComponent(id)}.html`,
+        };
+    }
+
+    function clearTable() {
+        resultsBody.innerHTML = '';
+        nextBtn.hidden = true;
+        last = {url: null, cursor: null};
+    }
+
+    function renderRows(items) {
+        const frag = document.createDocumentFragment();
+        for (const it of items) {
+            const links = openjdkLinks(it);
+            const tr = document.createElement('tr');
+
+            // Mark SCM-sourced records
+            const subject = it.subject || '';
+            if (subject.includes('RFR:') || subject.includes('Integrated:') || subject.includes('Withdrawn:')) {
+                tr.classList.add('scm-source');
+            }
+
+            // List
+            const tdList = document.createElement('td');
+            const aList = document.createElement('a');
+            aList.href = links.list;
+            aList.target = '_blank';
+            aList.rel = 'noopener';
+            aList.title = `Search by list: ${it.list || ''}`;
+            aList.textContent = it.list;
+            aList.addEventListener('click', (e) => {
+                e.preventDefault();
+                setMode('list-latest');
+                setListValue(it.list || '')
+                doPushState();
+                doSearch();
+            });
+            tdList.appendChild(aList);
+            tr.appendChild(tdList);
+
+            // Author → populate author search (no history push)
+            const tdAuthor = document.createElement('td');
+            const aAuthor = document.createElement('a');
+            aAuthor.href = '#';
+            aAuthor.title = `Search by author: ${it.author || ''}`;
+            aAuthor.textContent = it.author || '';
+            aAuthor.addEventListener('click', (e) => {
+                e.preventDefault();
+                setMode('author');
+                document.getElementById('author').value = it.author || '';
+                doPushState();
+                doSearch();
+            });
+            tdAuthor.appendChild(aAuthor);
+            tr.appendChild(tdAuthor);
+
+            // Subject → populate text search (no history push)
+            const tdSubject = document.createElement('td');
+            const aSubject = document.createElement('a');
+            aSubject.href = '#';
+            aSubject.title = `Search text: ${it.subject ?? ''}`;
+            aSubject.textContent = it.subject ?? '';
+            aSubject.addEventListener('click', (e) => {
+                e.preventDefault();
+                setMode('text-search');
+                document.getElementById('q').value = it.subject ?? '';
+                doPushState();
+                doSearch();
+            });
+            tdSubject.appendChild(aSubject);
+            tr.appendChild(tdSubject);
+
+            // Email → populate email search (no history push)
+            const tdEmail = document.createElement('td');
+            const aEmail = document.createElement('a');
+            aEmail.href = '#';
+            aEmail.title = `Search by email: ${it.email || ''}`;
+            aEmail.textContent = it.email || '';
+            aEmail.addEventListener('click', (e) => {
+                e.preventDefault();
+                setMode('email');
+                document.getElementById('email').value = it.email || '';
+                doPushState();
+                doSearch();
+            });
+            tdEmail.appendChild(aEmail);
+            tr.appendChild(tdEmail);
+
+            // Date (local display, tooltip shows raw ISO)
+            const tdDate = document.createElement('td');
+            const timeEl = document.createElement('time');
+            timeEl.dateTime = it.date || '';
+            timeEl.title = it.date || '';
+            timeEl.textContent = formatLocal(it.date);
+            tdDate.appendChild(timeEl);
+            tr.appendChild(tdDate);
+
+            // Month
+            const tdMonth = document.createElement('td');
+            const aMonth = document.createElement('a');
+            aMonth.href = links.month;
+            aMonth.target = '_blank';
+            aMonth.rel = 'noopener';
+            aMonth.title = `Open month page: ${it.list}/${it.month}`;
+            aMonth.textContent = it.month;
+            tdMonth.appendChild(aMonth);
+            tr.appendChild(tdMonth);
+
+            // ID → message link
+            const tdId = document.createElement('td');
+            tdId.className = 'nowrap';
+            const aId = document.createElement('a');
+            aId.href = links.id;
+            aId.target = '_blank';
+            aId.rel = 'noopener';
+            aId.title = `Open message: ${it.id}.html`;
+            aId.textContent = it.id;
+            tdId.appendChild(aId);
+            tr.appendChild(tdId);
+
+            frag.appendChild(tr);
+        }
+        resultsBody.appendChild(frag);
+    }
+
+    function setMode(mode) {
+        document.getElementById('mode').value = mode;
+        const show = id => document.getElementById(id).hidden = false;
+        const hide = id => document.getElementById(id).hidden = true;
+        hide('field-text');
+        hide('field-author');
+        hide('field-email');
+
+        if (mode === 'text-search') show('field-text');
+        if (mode === 'author') show('field-author');
+        if (mode === 'email') show('field-email');
+    }
+
+    // ---------- Build API URL ----------
+    function buildUrl({mode, list, q, author, email, from, to, order, limit, cursor}) {
+        const base = API_ROOT;
+        const params = {order, limit};
+        if (from) params.from = from;
+        if (to) params.to = to;
+        if (cursor) params.cursor = cursor;
+
+        let effectiveMode = mode;
+        if (mode === 'text-search' && !q) {
+            effectiveMode = 'list-latest';
+        }
+
+        switch (effectiveMode) {
+            case 'list-latest': {
+                const path = list ? `${base}/lists/${encodeURIComponent(list)}/mail` : `${base}/mail`;
+                return `${path}?${qs(params)}`;
+            }
+            case 'text-search': {
+                const path = list ? `${base}/lists/${encodeURIComponent(list)}/mail/search` : `${base}/mail/search`;
+                return `${path}?${qs({...params, q})}`;
+            }
+            case 'author': {
+                if (!author) throw new Error('Author is required.');
+                if (list) {
+                    const path = `${base}/lists/${encodeURIComponent(list)}/mail/byauthor`;
+                    return `${path}?${qs({...params, author})}`;
+                } else {
+                    const path = `${base}/mail/byauthor`;
+                    return `${path}?${qs({...params, author})}`;
+                }
+            }
+            case 'email': {
+                if (!email) throw new Error('Email is required.');
+                if (list) {
+                    const path = `${base}/lists/${encodeURIComponent(list)}/mail/byemail`;
+                    return `${path}?${qs({...params, email})}`;
+                } else {
+                    const path = `${base}/mail/byemail`;
+                    return `${path}?${qs({...params, email})}`;
+                }
+            }
+            default:
+                throw new Error('Unknown mode');
+        }
+    }
+
+    async function fetchPage(url) {
+        setBusy(true);
+        setStatus('');
+        try {
+            const res = await fetch(url, {headers: {'accept': 'application/json'}});
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+            return await res.json();
+        } finally {
+            setBusy(false);
+        }
+    }
+
+    async function doSearch(next = false) {
+        try {
+            if (!next) clearTable();
+
+            const mode = document.getElementById('mode').value;
+            const list = document.getElementById('list').value.trim();
+            const q = document.getElementById('q').value.trim();
+            const author = document.getElementById('author').value.trim();
+            const email = document.getElementById('email').value.trim();
+            const order = document.getElementById('order').value;
+            const limit = Math.max(1, Math.min(100, Number(document.getElementById('limit').value || 10)));
+
+            const from = localToUtcZ(document.getElementById('from').value);
+            const to = localToUtcZ(document.getElementById('to').value);
+
+            const url = buildUrl({
+                mode, list, q, author, email, from, to, order, limit,
+                cursor: next ? last.cursor : null
+            });
+
+            const data = await fetchPage(url);
+            const items = data.items || [];
+            renderRows(items);
+
+            last = {url, cursor: data.cursor || null};
+            nextBtn.hidden = !last.cursor;
+
+            setStatus(items.length ? `${items.length} result(s)` : 'No results');
+        } catch (err) {
+            setStatus(String(err.message || err), true);
+            nextBtn.hidden = true;
+        }
+    }
+
+    // ---------- URL ↔ form state (shareable links + history) ----------
+    function formToParams() {
+        const mode = document.getElementById('mode').value;
+        return {
+            mode,
+            list: document.getElementById('list').value.trim(),
+            q: document.getElementById('q').value.trim(),
+            author: document.getElementById('author').value.trim(),
+            email: document.getElementById('email').value.trim(),
+            from: localToUtcZ(document.getElementById('from').value),
+            to: localToUtcZ(document.getElementById('to').value),
+            order: document.getElementById('order').value,
+            limit: document.getElementById('limit').value
+        };
+    }
+
+    function doPushState() {
+        const params = formToParams();
+        const query = qs(params);
+        history.pushState(params, '', query ? `?${query}` : location.pathname);
+    }
+
+    function paramsFromUrl() {
+        const sp = new URLSearchParams(location.search);
+        return {
+            mode: sp.get('mode') || undefined,
+            list: sp.get('list') || '',
+            q: sp.get('q') || '',
+            author: sp.get('author') || '',
+            email: sp.get('email') || '',
+            from: sp.get('from') || '',
+            to: sp.get('to') || '',
+            order: sp.get('order') || '',
+            limit: sp.get('limit') || ''
+        };
+    }
+
+    function applyParamsToForm(p) {
+        const mode = p.mode || 'list-latest';
+        setMode(mode);
+        setListValue(p.list || '');
+        document.getElementById('q').value = p.q || '';
+        document.getElementById('author').value = p.author || '';
+        document.getElementById('email').value = p.email || '';
+        document.getElementById('order').value = p.order || 'desc';
+        if (p.limit) document.getElementById('limit').value = p.limit;
+
+        // Convert UTC Z times into local datetime-local inputs
+        document.getElementById('from').value = utcZToLocalInput(p.from || '');
+        document.getElementById('to').value = utcZToLocalInput(p.to || '');
+    }
+
+    // Only push on submit (no push for control changes or pagination)
+    formEl.addEventListener('submit', (e) => {
+        e.preventDefault();
+        doPushState();
+        doSearch(false);
+    });
+
+    // Back/forward restores form and performs the search for that state
+    window.addEventListener('popstate', (e) => {
+        const state = e.state || paramsFromUrl();
+        applyParamsToForm(state || {});
+        doSearch(false);
+    });
+
+    nextBtn.addEventListener('click', () => doSearch(true));
+
+    // React to search type changes (no history ops here)
+    document.getElementById('mode').addEventListener('change', (e) => {
+        setMode(e.target.value);
+    });
+
+    function isInitialState(p) {
+        return (
+            (p.mode === 'list-latest' || !p.mode) &&
+            !p.list && !p.q && !p.author && !p.email &&
+            !p.from && !p.to &&
+            (p.order === 'desc' || !p.order) &&
+            (!p.limit || p.limit === '25')
+        );
+    }
+
+    // ---------- Reset functionality ----------
+    function resetForm() {
+        // Restore initial defaults
+        setMode('list-latest');
+        setListValue('');
+        document.getElementById('q').value = '';
+        document.getElementById('author').value = '';
+        document.getElementById('email').value = '';
+        document.getElementById('order').value = 'desc';
+        document.getElementById('limit').value = '25';
+        document.getElementById('from').value = '';
+        document.getElementById('to').value = '';
+
+        clearTable();
+        setStatus('');
+
+        const params = formToParams();
+        history.pushState(params, '', location.pathname);
+    }
+
+    // Wire up reset button
+    document.getElementById('reset').addEventListener('click', resetForm);
+
+    // Init: if URL has params, hydrate and run the search; otherwise default mode only
+    (function init() {
+        refreshIngestStatus();
+
+        if (location.search) {
+            const p = paramsFromUrl();
+            applyParamsToForm(p);
+        } else {
+            setMode('list-latest');
+        }
+
+        doSearch(false);
+    })();
+</script>
+</body>
+</html>
