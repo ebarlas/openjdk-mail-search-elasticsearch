@@ -12,7 +12,7 @@ CLI usage:
 
 Lambda usage:
     Handler: sync.lambda_handler
-    Environment: ES_URL_PARAM (SSM parameter name for the ES URL),
+    Environment: ES_URL (required, e.g. https://elastic:pass@host:9200),
                  INDEX_NAME (optional, default: openjdk-mail)
 """
 
@@ -43,14 +43,6 @@ _es_ssl_ctx.check_hostname = False
 _es_ssl_ctx.verify_mode = ssl.CERT_NONE
 
 _es_auth_header = None
-
-
-def _get_es_url_from_ssm(param_name):
-    """Fetch ES URL from SSM Parameter Store. Cached after first call."""
-    import boto3
-    ssm = boto3.client('ssm', region_name=os.environ.get('AWS_REGION', 'us-west-1'))
-    resp = ssm.get_parameter(Name=param_name, WithDecryption=True)
-    return resp['Parameter']['Value']
 
 
 def _init_es_auth(es_url):
@@ -391,8 +383,7 @@ def lambda_handler(event, context):
         level=logging.INFO,
         format='[%(asctime)s] %(levelname)s %(name)s - %(message)s',
     )
-    raw_url = os.environ.get('ES_URL') or _get_es_url_from_ssm(os.environ['ES_URL_PARAM'])
-    es_url = _init_es_auth(raw_url)
+    es_url = _init_es_auth(os.environ['ES_URL'])
     index_name = os.environ.get('INDEX_NAME', 'openjdk-mail')
     checkpoint_index = os.environ.get('CHECKPOINT_INDEX', CHECKPOINT_INDEX)
     for list_name in MAILING_LISTS:
