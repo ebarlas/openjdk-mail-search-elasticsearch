@@ -259,7 +259,10 @@ def relevance_search(es_url, index_name, query_text, limit, page,
 def get_status(es_url, checkpoint_index):
     body = {
         'size': 0,
-        'aggs': {'last_sync': {'max': {'field': 'synced_at'}}},
+        'aggs': {
+            'last_sync': {'max': {'field': 'synced_at'}},
+            'last_update': {'max': {'field': 'updated_at'}},
+        },
     }
     req = Request(
         f'{es_url}/{checkpoint_index}/_search',
@@ -268,8 +271,9 @@ def get_status(es_url, checkpoint_index):
     )
     with _es_urlopen(req, timeout=15) as resp:
         result = json.loads(resp.read())
-    value_str = result['aggregations']['last_sync'].get('value_as_string')
-    return value_str, value_str
+    last_check = result['aggregations']['last_sync'].get('value_as_string')
+    last_update = result['aggregations']['last_update'].get('value_as_string') or last_check
+    return last_check, last_update
 
 
 # --- Response conversion ---

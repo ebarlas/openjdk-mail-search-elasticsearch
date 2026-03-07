@@ -250,19 +250,26 @@ def get_checkpoint(es_url, checkpoint_index, list_name):
     return (dt.year, dt.month, dt.day)
 
 
-def put_checkpoint(es_url, checkpoint_index, list_name):
-    """Write a checkpoint for a list with the current UTC timestamp."""
+def put_checkpoint(es_url, checkpoint_index, list_name, had_updates):
+    """Write a checkpoint for a list with the current UTC timestamp.
+
+    Always sets synced_at. Only overwrites updated_at when had_updates is True;
+    otherwise the existing updated_at value is retained via partial update.
+    """
     now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     doc = {"list": list_name, "synced_at": now}
+    if had_updates:
+        doc["updated_at"] = now
+    body = {"doc": doc, "doc_as_upsert": True}
     req = Request(
-        f"{es_url}/{checkpoint_index}/_doc/{list_name}",
-        data=json.dumps(doc).encode(),
+        f"{es_url}/{checkpoint_index}/_update/{list_name}",
+        data=json.dumps(body).encode(),
         headers={"Content-Type": "application/json", "User-Agent": "openjdk-mail-search"},
-        method="PUT",
+        method="POST",
     )
     with _es_urlopen(req, timeout=15):
         pass
-    logger.info("Checkpoint %s: %s", list_name, now)
+    logger.info("Checkpoint %s: %s (updated=%s)", list_name, now, had_updates)
 
 
 def sync_list(list_name, es_url, index_name, start_ym, checkpoint_index):
@@ -344,7 +351,7 @@ def sync_list(list_name, es_url, index_name, start_ym, checkpoint_index):
     logger.info("Done %s. %d new, %d existing in %dms",
                 list_name, cumulative_new, cumulative_existing, total_elapsed * 1000)
 
-    put_checkpoint(es_url, checkpoint_index, list_name)
+    put_checkpoint(es_url, checkpoint_index, list_name, had_updates=(cumulative_new > 0))
 
 
 MAILING_LISTS = [
