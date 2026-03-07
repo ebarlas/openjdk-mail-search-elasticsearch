@@ -7,13 +7,17 @@ from urllib.error import HTTPError
 
 from mbox import parse_mbox
 from sync import (
+    CHECKPOINT_INDEX,
     MAILING_LISTS,
     bulk_index,
+    get_checkpoint,
     get_latest_date,
     lambda_handler,
     month_range,
     parse_date,
+    put_checkpoint,
     resolve_start,
+    sync_list,
     strip_angle_brackets,
     transform_message,
 )
@@ -233,35 +237,114 @@ class TestBulkIndex(unittest.TestCase):
         self.assertEqual(len(second_lines), 2)
 
 
+class TestGetCheckpoint(unittest.TestCase):
+    @patch("sync.urlopen")
+    def test_found(self, mock_urlopen):
+        body = json.dumps({
+            "_source": {"list": "amber-dev", "synced_at": "2026-03-06T23:46:05Z"}
+        }).encode()
+        mock_urlopen.return_value = mock_response(body)
+        result = get_checkpoint("http://fake:9200", "cp-index", "amber-dev")
+        self.assertEqual(result, (2026, 3, 6))
+
+    @patch("sync.urlopen")
+    def test_not_found(self, mock_urlopen):
+        mock_urlopen.side_effect = HTTPError(
+            url="", code=404, msg="Not Found", hdrs={}, fp=None,
+        )
+        result = get_checkpoint("http://fake:9200", "cp-index", "amber-dev")
+        self.assertIsNone(result)
+
+    @patch("sync.urlopen")
+    def test_parses_month_correctly(self, mock_urlopen):
+        body = json.dumps({
+            "_source": {"list": "test", "synced_at": "2025-11-15T10:30:00Z"}
+        }).encode()
+        mock_urlopen.return_value = mock_response(body)
+        result = get_checkpoint("http://fake:9200", "cp-index", "test")
+        self.assertEqual(result, (2025, 11, 15))
+
+
+class TestPutCheckpoint(unittest.TestCase):
+    @patch("sync.urlopen")
+    def test_writes_checkpoint(self, mock_urlopen):
+        mock_urlopen.return_value = mock_response(b'{"result": "created"}')
+        put_checkpoint("http://fake:9200", "cp-index", "amber-dev")
+        req = mock_urlopen.call_args[0][0]
+        self.assertEqual(req.get_method(), "PUT")
+        self.assertIn("cp-index/_doc/amber-dev", req.full_url)
+        body = json.loads(req.data)
+        self.assertEqual(body["list"], "amber-dev")
+        self.assertIn("synced_at", body)
+
+
+class TestSeedListCheckpoints(unittest.TestCase):
+    @patch("sync.put_checkpoint")
+    @patch("sync.download_mbox", return_value=(b"", 0, 0.0))
+    @patch("sync.get_checkpoint", return_value=(2026, 3, 5))
+    def test_uses_checkpoint_over_resolve_start(self, mock_get_cp, mock_dl, mock_put_cp):
+        sync_list("test-list", "http://fake:9200", "idx", None, "cp-index")
+        mock_get_cp.assert_called_once_with("http://fake:9200", "cp-index", "test-list")
+        mock_put_cp.assert_called_once_with("http://fake:9200", "cp-index", "test-list")
+
+    @patch("sync.put_checkpoint")
+    @patch("sync.download_mbox", return_value=(b"", 0, 0.0))
+    @patch("sync.resolve_start", return_value=(2026, 3, 1))
+    @patch("sync.get_checkpoint", return_value=None)
+    def test_falls_back_to_resolve_start(self, mock_get_cp, mock_resolve, mock_dl, mock_put_cp):
+        sync_list("test-list", "http://fake:9200", "idx", None, "cp-index")
+        mock_get_cp.assert_called_once()
+        mock_resolve.assert_called_once()
+        mock_put_cp.assert_called_once()
+
+    @patch("sync.put_checkpoint")
+    @patch("sync.download_mbox", return_value=(b"", 0, 0.0))
+    @patch("sync.get_checkpoint")
+    def test_start_ym_bypasses_checkpoint(self, mock_get_cp, mock_dl, mock_put_cp):
+        sync_list("test-list", "http://fake:9200", "idx", (2026, 3), "cp-index")
+        mock_get_cp.assert_not_called()
+        mock_put_cp.assert_called_once()
+
+
 class TestLambdaHandler(unittest.TestCase):
-    @patch("sync.seed_list")
+    @patch("sync.sync_list")
     @patch.dict(os.environ, {"ES_URL": "http://es:9200"})
-    def test_calls_seed_list_for_each_mailing_list(self, mock_seed):
+    def test_calls_sync_list_for_each_mailing_list(self, mock_seed):
         lambda_handler({}, None)
         self.assertEqual(mock_seed.call_count, len(MAILING_LISTS))
         for list_name in MAILING_LISTS:
-            mock_seed.assert_any_call(list_name, "http://es:9200", "openjdk-mail", start_ym=None)
+            mock_seed.assert_any_call(
+                list_name, "http://es:9200", "openjdk-mail",
+                start_ym=None, checkpoint_index=CHECKPOINT_INDEX,
+            )
 
-    @patch("sync.seed_list")
+    @patch("sync.sync_list")
     @patch.dict(os.environ, {"ES_URL": "http://es:9200", "INDEX_NAME": "custom-index"})
     def test_custom_index_name(self, mock_seed):
         lambda_handler({}, None)
         for c in mock_seed.call_args_list:
-            self.assertEqual(c, call(c[0][0], "http://es:9200", "custom-index", start_ym=None))
+            self.assertEqual(c[0][2], "custom-index")
 
-    @patch("sync.seed_list")
+    @patch("sync.sync_list")
     @patch.dict(os.environ, {}, clear=True)
     def test_missing_es_url_raises(self, mock_seed):
         with self.assertRaises(KeyError):
             lambda_handler({}, None)
         mock_seed.assert_not_called()
 
-    @patch("sync.seed_list")
+    @patch("sync.sync_list")
     @patch.dict(os.environ, {"ES_URL": "http://es:9200"})
-    def test_default_index_name(self, mock_seed):
+    def test_default_checkpoint_index(self, mock_seed):
         lambda_handler({}, None)
         for c in mock_seed.call_args_list:
-            self.assertEqual(c[0][2], "openjdk-mail")
+            self.assertEqual(c[1]["checkpoint_index"], CHECKPOINT_INDEX)
+
+    @patch("sync.sync_list")
+    @patch.dict(os.environ, {"ES_URL": "http://es:9200", "CHECKPOINT_INDEX": "custom-cp"})
+    def test_custom_checkpoint_index(self, mock_seed):
+        lambda_handler({}, None)
+        for c in mock_seed.call_args_list:
+            self.assertEqual(c[1]["checkpoint_index"], "custom-cp")
 
 
 if __name__ == "__main__":

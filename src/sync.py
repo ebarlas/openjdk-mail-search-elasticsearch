@@ -31,6 +31,7 @@ logger = logging.getLogger(__name__)
 
 BULK_BATCH_SIZE = 500
 ORIGIN_YEAR, ORIGIN_MONTH = 2007, 1
+CHECKPOINT_INDEX = 'openjdk-mail-checkpoints'
 
 
 def month_range(start_year, start_month):
@@ -167,13 +168,51 @@ def resolve_start(list_name, es_url, index_name):
     return (latest.year, latest.month, latest.day)
 
 
-def seed_list(list_name, es_url, index_name, start_ym):
+def get_checkpoint(es_url, checkpoint_index, list_name):
+    """Read the checkpoint for a list. Returns (year, month) or None."""
+    req = Request(
+        f"{es_url}/{checkpoint_index}/_doc/{list_name}",
+        headers={"User-Agent": "openjdk-mail-search"},
+    )
+    try:
+        with urlopen(req, timeout=15) as resp:
+            result = json.loads(resp.read())
+    except HTTPError as e:
+        if e.code == 404:
+            return None
+        raise
+    synced_at = result["_source"]["synced_at"]
+    dt = datetime.fromisoformat(synced_at.replace("Z", "+00:00"))
+    return (dt.year, dt.month, dt.day)
+
+
+def put_checkpoint(es_url, checkpoint_index, list_name):
+    """Write a checkpoint for a list with the current UTC timestamp."""
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    doc = {"list": list_name, "synced_at": now}
+    req = Request(
+        f"{es_url}/{checkpoint_index}/_doc/{list_name}",
+        data=json.dumps(doc).encode(),
+        headers={"Content-Type": "application/json", "User-Agent": "openjdk-mail-search"},
+        method="PUT",
+    )
+    with urlopen(req, timeout=15):
+        pass
+    logger.info("Checkpoint %s: %s", list_name, now)
+
+
+def sync_list(list_name, es_url, index_name, start_ym, checkpoint_index):
     start_day = 1
     if start_ym is None:
-        resolved = resolve_start(list_name, es_url, index_name)
-        if resolved:
-            start_ym = (resolved[0], resolved[1])
-            start_day = resolved[2]
+        cp = get_checkpoint(es_url, checkpoint_index, list_name)
+        if cp:
+            start_ym = (cp[0], cp[1])
+            start_day = cp[2]
+        else:
+            resolved = resolve_start(list_name, es_url, index_name)
+            if resolved:
+                start_ym = (resolved[0], resolved[1])
+                start_day = resolved[2]
     elif len(start_ym) == 3:
         start_day = start_ym[2]
         start_ym = (start_ym[0], start_ym[1])
@@ -230,6 +269,8 @@ def seed_list(list_name, es_url, index_name, start_ym):
     total_elapsed = time.monotonic() - t_start
     logger.info("Done %s. %d documents indexed in %.0fs", list_name, cumulative, total_elapsed)
 
+    put_checkpoint(es_url, checkpoint_index, list_name)
+
 
 MAILING_LISTS = [
     'amber-dev',
@@ -269,8 +310,9 @@ def lambda_handler(event, context):
     )
     es_url = os.environ['ES_URL']
     index_name = os.environ.get('INDEX_NAME', 'openjdk-mail')
+    checkpoint_index = os.environ.get('CHECKPOINT_INDEX', CHECKPOINT_INDEX)
     for list_name in MAILING_LISTS:
-        seed_list(list_name, es_url, index_name, start_ym=None)
+        sync_list(list_name, es_url, index_name, start_ym=None, checkpoint_index=checkpoint_index)
 
 
 def main():
@@ -283,6 +325,8 @@ def main():
     parser.add_argument("--es-url", default="http://localhost:9200", help="Elasticsearch URL")
     parser.add_argument("--index", default="openjdk-mail", help="Target index name")
     parser.add_argument("--start", help="Start from YYYY-MM (overrides auto-detection)")
+    parser.add_argument("--checkpoint-index", default=CHECKPOINT_INDEX,
+                        help="ES index for sync checkpoints (default: %(default)s)")
     args = parser.parse_args()
 
     start_ym = None
@@ -290,7 +334,8 @@ def main():
         parts = args.start.split("-")
         start_ym = (int(parts[0]), int(parts[1]))
 
-    seed_list(args.list_name, args.es_url, args.index, start_ym)
+    sync_list(args.list_name, args.es_url, args.index, start_ym,
+              checkpoint_index=args.checkpoint_index)
 
 
 if __name__ == "__main__":
