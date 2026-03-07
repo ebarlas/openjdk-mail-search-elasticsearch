@@ -379,10 +379,7 @@ MAILING_LISTS = [
 
 
 def lambda_handler(event, context):
-    logging.basicConfig(
-        level=logging.INFO,
-        format='[%(asctime)s] %(levelname)s %(name)s - %(message)s',
-    )
+    logging.getLogger().setLevel(logging.INFO)
     es_url = _init_es_auth(os.environ['ES_URL'])
     index_name = os.environ.get('INDEX_NAME', 'openjdk-mail')
     checkpoint_index = os.environ.get('CHECKPOINT_INDEX', CHECKPOINT_INDEX)
