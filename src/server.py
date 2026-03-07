@@ -220,6 +220,42 @@ def mail_by_email(es_url, index_name, email_addr, cp, list_name=None):
     return _es_search(es_url, index_name, _build_search(q, cp))
 
 
+def relevance_search(es_url, index_name, query_text, limit, page,
+                     list_name=None, date_range=None):
+    """Scored full-text search with subject boosting and highlighting."""
+    filters = _filters(list_name, date_range)
+    query = {
+        'bool': {
+            'must': [{
+                'multi_match': {
+                    'query': query_text,
+                    'fields': ['subject^3', 'body'],
+                    'type': 'best_fields',
+                }
+            }],
+        }
+    }
+    if filters:
+        query['bool']['filter'] = filters
+    body = {
+        'size': limit,
+        'from': (page - 1) * limit,
+        'track_total_hits': True,
+        'query': query,
+        'sort': [{'_score': 'desc'}, {'date': 'desc'}],
+        'highlight': {
+            'fields': {
+                'subject': {'number_of_fragments': 0},
+                'body': {'fragment_size': 150, 'number_of_fragments': 3},
+            },
+            'pre_tags': ['<em>'],
+            'post_tags': ['</em>'],
+        },
+        '_source': ['list', 'message_id', 'date', 'author', 'email', 'subject'],
+    }
+    return _es_search(es_url, index_name, body)
+
+
 def get_status(es_url, checkpoint_index):
     body = {
         'size': 0,
@@ -269,6 +305,28 @@ def convert_hits(result, limit):
     return items, cursor
 
 
+def convert_relevance_hit(hit):
+    item = convert_hit(hit)
+    item['score'] = hit.get('_score')
+    highlights = hit.get('highlight', {})
+    if highlights:
+        item['highlights'] = {k: v for k, v in highlights.items()}
+    return item
+
+
+def convert_relevance_results(result, page, page_size):
+    hits = result['hits']['hits']
+    total_info = result['hits'].get('total', {})
+    total = total_info.get('value', 0) if isinstance(total_info, dict) else total_info
+    items = [convert_relevance_hit(h) for h in hits]
+    return {
+        'total': total,
+        'page': page,
+        'page_size': page_size,
+        'items': items,
+    }
+
+
 # --- Lambda handler ---
 
 def lambda_handler(event, context):
@@ -284,6 +342,20 @@ def lambda_handler(event, context):
         return not_found()
 
     cp = common_params(r.params)
+    page = max(1, extract_param(r.params, 'page', 1, int))
+
+    if (m := re.match(r'.*/lists/([^/]+)/mail/search/relevance$', r.uri)) and 'q' in r.params:
+        list_name = m.group(1)
+        query_text = extract_param(r.params, 'q')
+        result = relevance_search(es_url, index_name, query_text, cp.limit, page,
+                                  list_name=list_name, date_range=cp.date_range)
+        return json_response(_to_json(convert_relevance_results(result, page, cp.limit)))
+
+    if r.uri.endswith('/mail/search/relevance') and 'q' in r.params:
+        query_text = extract_param(r.params, 'q')
+        result = relevance_search(es_url, index_name, query_text, cp.limit, page,
+                                  date_range=cp.date_range)
+        return json_response(_to_json(convert_relevance_results(result, page, cp.limit)))
 
     if (m := re.match(r'.*/lists/([^/]+)/mail/search$', r.uri)) and 'q' in r.params:
         list_name = m.group(1)
