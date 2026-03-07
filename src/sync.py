@@ -23,7 +23,7 @@ import logging
 import os
 import ssl
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from email.utils import parseaddr, parsedate_to_datetime
 from urllib.error import HTTPError
 from urllib.parse import urlparse, urlunparse
@@ -36,6 +36,7 @@ logger = logging.getLogger(__name__)
 BULK_BATCH_SIZE = 500
 ORIGIN_YEAR, ORIGIN_MONTH = 2007, 1
 CHECKPOINT_INDEX = 'openjdk-mail-checkpoints'
+SAFETY_BUFFER_DAYS = 1
 
 _es_ssl_ctx = ssl.create_default_context()
 _es_ssl_ctx.check_hostname = False
@@ -201,6 +202,36 @@ def bulk_index(es_url, index_name, docs):
     return total_ok, total_err
 
 
+def filter_existing(es_url, index_name, docs):
+    """Remove docs that already exist in ES. Returns (new_docs, existing_count)."""
+    if not docs:
+        return [], 0
+
+    existing_ids = set()
+    ids = [doc["_id"] for doc in docs]
+
+    for i in range(0, len(ids), BULK_BATCH_SIZE):
+        batch_ids = ids[i:i + BULK_BATCH_SIZE]
+        req = Request(
+            f"{es_url}/{index_name}/_mget?_source=false",
+            data=json.dumps({"ids": batch_ids}).encode(),
+            headers={"Content-Type": "application/json", "User-Agent": "openjdk-mail-search"},
+        )
+        try:
+            with _es_urlopen(req, timeout=15) as resp:
+                result = json.loads(resp.read())
+        except HTTPError as e:
+            if e.code == 404:
+                return docs, 0
+            raise
+        for doc in result["docs"]:
+            if doc.get("found"):
+                existing_ids.add(doc["_id"])
+
+    new_docs = [doc for doc in docs if doc["_id"] not in existing_ids]
+    return new_docs, len(existing_ids)
+
+
 def resolve_start(list_name, es_url, index_name):
     """Determine the starting (year, month, day) based on the latest indexed record."""
     latest = get_latest_date(es_url, index_name, list_name)
@@ -254,6 +285,11 @@ def sync_list(list_name, es_url, index_name, start_ym, checkpoint_index):
             if resolved:
                 start_ym = (resolved[0], resolved[1])
                 start_day = resolved[2]
+        if start_ym:
+            buffered = datetime(start_ym[0], start_ym[1], start_day,
+                                tzinfo=timezone.utc) - timedelta(days=SAFETY_BUFFER_DAYS)
+            start_ym = (buffered.year, buffered.month)
+            start_day = buffered.day
     elif len(start_ym) == 3:
         start_day = start_ym[2]
         start_ym = (start_ym[0], start_ym[1])
@@ -270,7 +306,8 @@ def sync_list(list_name, es_url, index_name, start_ym, checkpoint_index):
         months = month_range(ORIGIN_YEAR, ORIGIN_MONTH)
         logger.info("Full seed for %s, %d months", list_name, len(months))
 
-    cumulative = 0
+    cumulative_new = 0
+    cumulative_existing = 0
     t_start = time.monotonic()
     is_first = True
 
@@ -298,17 +335,22 @@ def sync_list(list_name, es_url, index_name, start_ym, checkpoint_index):
             else:
                 skipped += 1
 
-        ok, err = bulk_index(es_url, index_name, docs)
-        cumulative += ok
+        new_docs, existing = filter_existing(es_url, index_name, docs)
+        ok, err = bulk_index(es_url, index_name, new_docs)
+        cumulative_new += ok
+        cumulative_existing += existing
         elapsed = time.monotonic() - t_start
 
         logger.info(
-            "%d-%02d: %d parsed, %d indexed, %d errors, %d skipped | cumulative: %d | %.0fs",
-            year, month, len(messages), ok, err, skipped, cumulative, elapsed,
+            "%d-%02d: %d parsed, %d new, %d existing, %d skipped, %d errors"
+            " | cumulative: %d new, %d existing | %.0fs",
+            year, month, len(messages), ok, existing, skipped, err,
+            cumulative_new, cumulative_existing, elapsed,
         )
 
     total_elapsed = time.monotonic() - t_start
-    logger.info("Done %s. %d documents indexed in %.0fs", list_name, cumulative, total_elapsed)
+    logger.info("Done %s. %d new, %d existing in %.0fs",
+                list_name, cumulative_new, cumulative_existing, total_elapsed)
 
     put_checkpoint(es_url, checkpoint_index, list_name)
 
