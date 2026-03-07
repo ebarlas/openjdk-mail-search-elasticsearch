@@ -2,6 +2,7 @@
   "family": "openjdk-mail-es-task",
   "networkMode": "host",
   "requiresCompatibilities": ["EC2"],
+  "executionRoleArn": "arn:aws:iam::394119789999:role/ecsTaskExecutionRole",
   "containerDefinitions": [
     {
       "name": "elasticsearch",
@@ -20,7 +21,18 @@
         { "name": "discovery.type", "value": "single-node" },
         { "name": "ES_JAVA_OPTS", "value": "-Xms2g -Xmx2g" },
         { "name": "bootstrap.memory_lock", "value": "true" },
-        { "name": "xpack.security.enabled", "value": "false" }
+        { "name": "xpack.security.enabled", "value": "true" },
+        { "name": "xpack.security.http.ssl.enabled", "value": "true" },
+        { "name": "xpack.security.http.ssl.key", "value": "/usr/share/elasticsearch/config/certs/instance/instance.key" },
+        { "name": "xpack.security.http.ssl.certificate", "value": "/usr/share/elasticsearch/config/certs/instance/instance.crt" },
+        { "name": "xpack.security.http.ssl.certificate_authorities", "value": "/usr/share/elasticsearch/config/certs/ca/ca.crt" },
+        { "name": "xpack.security.transport.ssl.enabled", "value": "false" }
+      ],
+      "secrets": [
+        {
+          "name": "ELASTIC_PASSWORD",
+          "valueFrom": "arn:aws:ssm:us-west-1:394119789999:parameter/openjdk-mail/elastic-password"
+        }
       ],
       "ulimits": [
         {
@@ -38,10 +50,15 @@
         {
           "sourceVolume": "es-data",
           "containerPath": "/usr/share/elasticsearch/data"
+        },
+        {
+          "sourceVolume": "es-certs",
+          "containerPath": "/usr/share/elasticsearch/config/certs",
+          "readOnly": true
         }
       ],
       "healthCheck": {
-        "command": ["CMD-SHELL", "curl -sf http://localhost:9200/_cluster/health || exit 1"],
+        "command": ["CMD-SHELL", "curl -ksf -u elastic:${ELASTIC_PASSWORD} https://localhost:9200/_cluster/health || exit 1"],
         "interval": 30,
         "timeout": 10,
         "retries": 3,
@@ -54,6 +71,12 @@
       "name": "es-data",
       "host": {
         "sourcePath": "/data/elasticsearch"
+      }
+    },
+    {
+      "name": "es-certs",
+      "host": {
+        "sourcePath": "/data/elasticsearch/certs"
       }
     }
   ]

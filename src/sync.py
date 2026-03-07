@@ -7,22 +7,26 @@ record onward, filling any gaps idempotently.
 
 CLI usage:
     python sync.py amber-dev
-    python sync.py amber-dev --es-url http://localhost:9200 --index openjdk-mail
+    python sync.py amber-dev --es-url https://elastic:pass@host:9200 --index openjdk-mail
     python sync.py amber-dev --start 2024-01
 
 Lambda usage:
     Handler: sync.lambda_handler
-    Environment: ES_URL (required), INDEX_NAME (optional, default: openjdk-mail)
+    Environment: ES_URL_PARAM (SSM parameter name for the ES URL),
+                 INDEX_NAME (optional, default: openjdk-mail)
 """
 
 import argparse
+import base64
 import json
 import logging
 import os
+import ssl
 import time
 from datetime import datetime, timezone
 from email.utils import parseaddr, parsedate_to_datetime
 from urllib.error import HTTPError
+from urllib.parse import urlparse, urlunparse
 from urllib.request import Request, urlopen
 
 from mbox import body_text, build_export_url, download_mbox, parse_mbox
@@ -32,6 +36,43 @@ logger = logging.getLogger(__name__)
 BULK_BATCH_SIZE = 500
 ORIGIN_YEAR, ORIGIN_MONTH = 2007, 1
 CHECKPOINT_INDEX = 'openjdk-mail-checkpoints'
+
+_es_ssl_ctx = ssl.create_default_context()
+_es_ssl_ctx.check_hostname = False
+_es_ssl_ctx.verify_mode = ssl.CERT_NONE
+
+_es_auth_header = None
+
+
+def _get_es_url_from_ssm(param_name):
+    """Fetch ES URL from SSM Parameter Store. Cached after first call."""
+    import boto3
+    ssm = boto3.client('ssm', region_name=os.environ.get('AWS_REGION', 'us-west-1'))
+    resp = ssm.get_parameter(Name=param_name, WithDecryption=True)
+    return resp['Parameter']['Value']
+
+
+def _init_es_auth(es_url):
+    """Extract credentials from ES URL, set auth header, return clean URL."""
+    global _es_auth_header
+    parsed = urlparse(es_url)
+    if parsed.username:
+        credentials = base64.b64encode(
+            f"{parsed.username}:{parsed.password or ''}".encode()
+        ).decode()
+        _es_auth_header = f"Basic {credentials}"
+        netloc = parsed.hostname
+        if parsed.port:
+            netloc = f"{netloc}:{parsed.port}"
+        return urlunparse(parsed._replace(netloc=netloc))
+    return es_url
+
+
+def _es_urlopen(req, **kwargs):
+    """urlopen wrapper that adds ES auth and skips TLS verification."""
+    if _es_auth_header:
+        req.add_header("Authorization", _es_auth_header)
+    return urlopen(req, context=_es_ssl_ctx, **kwargs)
 
 
 def month_range(start_year, start_month):
@@ -62,7 +103,7 @@ def get_latest_date(es_url, index_name, list_name):
         headers={"Content-Type": "application/json", "User-Agent": "openjdk-mail-search"},
     )
     try:
-        with urlopen(req, timeout=15) as resp:
+        with _es_urlopen(req, timeout=15) as resp:
             result = json.loads(resp.read())
     except HTTPError as e:
         if e.code == 404:
@@ -143,7 +184,7 @@ def bulk_index(es_url, index_name, docs):
             },
             method="POST",
         )
-        with urlopen(req, timeout=120) as resp:
+        with _es_urlopen(req, timeout=120) as resp:
             result = json.loads(resp.read())
 
         if result.get("errors"):
@@ -175,7 +216,7 @@ def get_checkpoint(es_url, checkpoint_index, list_name):
         headers={"User-Agent": "openjdk-mail-search"},
     )
     try:
-        with urlopen(req, timeout=15) as resp:
+        with _es_urlopen(req, timeout=15) as resp:
             result = json.loads(resp.read())
     except HTTPError as e:
         if e.code == 404:
@@ -196,7 +237,7 @@ def put_checkpoint(es_url, checkpoint_index, list_name):
         headers={"Content-Type": "application/json", "User-Agent": "openjdk-mail-search"},
         method="PUT",
     )
-    with urlopen(req, timeout=15):
+    with _es_urlopen(req, timeout=15):
         pass
     logger.info("Checkpoint %s: %s", list_name, now)
 
@@ -308,7 +349,8 @@ def lambda_handler(event, context):
         level=logging.INFO,
         format='[%(asctime)s] %(levelname)s %(name)s - %(message)s',
     )
-    es_url = os.environ['ES_URL']
+    raw_url = os.environ.get('ES_URL') or _get_es_url_from_ssm(os.environ['ES_URL_PARAM'])
+    es_url = _init_es_auth(raw_url)
     index_name = os.environ.get('INDEX_NAME', 'openjdk-mail')
     checkpoint_index = os.environ.get('CHECKPOINT_INDEX', CHECKPOINT_INDEX)
     for list_name in MAILING_LISTS:
@@ -329,12 +371,14 @@ def main():
                         help="ES index for sync checkpoints (default: %(default)s)")
     args = parser.parse_args()
 
+    es_url = _init_es_auth(args.es_url)
+
     start_ym = None
     if args.start:
         parts = args.start.split("-")
         start_ym = (int(parts[0]), int(parts[1]))
 
-    sync_list(args.list_name, args.es_url, args.index, start_ym,
+    sync_list(args.list_name, es_url, args.index, start_ym,
               checkpoint_index=args.checkpoint_index)
 
 

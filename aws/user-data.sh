@@ -31,3 +31,5 @@ mkdir -p /data/elasticsearch
 blkid "$DATA_DEV" || mkfs.ext4 "$DATA_DEV"
 mount "$DATA_DEV" /data/elasticsearch
 chown 1000:1000 /data/elasticsearch
+mkdir -p /data/elasticsearch/certs
+chown 1000:1000 /data/elasticsearch/certs

@@ -42,7 +42,7 @@ aws ec2 create-security-group \
   --profile personal \
   --region us-west-1 \
   --group-name openjdk-mail-sg \
-  --description "OpenJDK Mail Search - SSH only"
+  --description "OpenJDK Mail Search"
 ```
 
 ```
@@ -51,6 +51,14 @@ aws ec2 authorize-security-group-ingress \
   --region us-west-1 \
   --group-name openjdk-mail-sg \
   --protocol tcp --port 22 --cidr <your-ip>/32
+```
+
+```
+aws ec2 authorize-security-group-ingress \
+  --profile personal \
+  --region us-west-1 \
+  --group-name openjdk-mail-sg \
+  --protocol tcp --port 9200 --cidr 0.0.0.0/0
 ```
 
 ## 5. Create launch template
@@ -75,7 +83,71 @@ aws ec2 run-instances \
   --security-groups openjdk-mail-sg
 ```
 
-## 7. Register ECS task definition
+## 7. Generate TLS certificates
+
+SSH into the EC2 instance:
+
+```
+ssh -i openjdk-mail-key.pem ec2-user@<instance-ip>
+```
+
+Generate a CA and HTTP certificate using the ES Docker image:
+
+```
+mkdir -p /data/elasticsearch/certs
+
+docker run --rm \
+  -v /data/elasticsearch/certs:/certs \
+  docker.elastic.co/elasticsearch/elasticsearch:9.3.1 \
+  bash -c '
+    bin/elasticsearch-certutil ca --pem --out /certs/ca.zip &&
+    cd /certs && unzip ca.zip && rm ca.zip &&
+    bin/elasticsearch-certutil cert \
+      --ca-cert /certs/ca/ca.crt --ca-key /certs/ca/ca.key \
+      --pem --out /certs/http.zip \
+      --dns localhost --ip 127.0.0.1 &&
+    cd /certs && unzip http.zip && rm http.zip
+  '
+
+chown -R 1000:1000 /data/elasticsearch/certs
+```
+
+This creates:
+
+```
+/data/elasticsearch/certs/
+├── ca/
+│   ├── ca.crt
+│   └── ca.key
+└── instance/
+    ├── instance.crt
+    └── instance.key
+```
+
+## 8. Store secrets in SSM Parameter Store
+
+```
+aws ssm put-parameter \
+  --profile personal \
+  --region us-west-1 \
+  --name /openjdk-mail/elastic-password \
+  --type SecureString \
+  --value "<password>"
+```
+
+```
+aws ssm put-parameter \
+  --profile personal \
+  --region us-west-1 \
+  --name /openjdk-mail/es-url \
+  --type SecureString \
+  --value "https://elastic:<password>@<instance-ip>:9200"
+```
+
+The task definition reads `ELASTIC_PASSWORD` from SSM via the `ecsTaskExecutionRole`.
+The Lambda reads `ES_URL` from SSM via `ES_URL_PARAM` at runtime.
+
+## 9. Register ECS task definition
 
 ```
 aws ecs register-task-definition \
@@ -84,7 +156,7 @@ aws ecs register-task-definition \
   --cli-input-json file://openjdk-mail-es-task.json
 ```
 
-## 8. Create ECS service
+## 10. Create ECS service
 
 ```
 aws ecs create-service \
@@ -98,7 +170,7 @@ aws ecs create-service \
   --deployment-configuration minimumHealthyPercent=0,maximumPercent=100
 ```
 
-## 9. Verify
+## 11. Verify
 
 SSH tunnel into the instance and check ES:
 
@@ -107,7 +179,7 @@ ssh -L 9200:localhost:9200 -i openjdk-mail-key.pem ec2-user@<instance-ip>
 ```
 
 ```
-curl http://localhost:9200/_cluster/health?pretty
+curl -k -u elastic:<password> https://localhost:9200/_cluster/health?pretty
 ```
 
 ## Updating the ECS service
