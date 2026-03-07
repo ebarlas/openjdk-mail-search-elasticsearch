@@ -335,14 +335,14 @@ def sync_list(list_name, es_url, index_name, start_ym, checkpoint_index):
 
         logger.info(
             "%d-%02d: %d parsed, %d new, %d existing, %d skipped, %d errors"
-            " | cumulative: %d new, %d existing | %.0fs",
+            " | cumulative: %d new, %d existing | %dms",
             year, month, len(messages), ok, existing, skipped, err,
-            cumulative_new, cumulative_existing, elapsed,
+            cumulative_new, cumulative_existing, elapsed * 1000,
         )
 
     total_elapsed = time.monotonic() - t_start
-    logger.info("Done %s. %d new, %d existing in %.0fs",
-                list_name, cumulative_new, cumulative_existing, total_elapsed)
+    logger.info("Done %s. %d new, %d existing in %dms",
+                list_name, cumulative_new, cumulative_existing, total_elapsed * 1000)
 
     put_checkpoint(es_url, checkpoint_index, list_name)
 
