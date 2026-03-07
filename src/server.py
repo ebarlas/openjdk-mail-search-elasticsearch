@@ -189,16 +189,11 @@ def _filters(list_name=None, date_range=None):
 
 def search_mail(es_url, index_name, query_text, cp, list_name=None):
     filters = _filters(list_name, cp.date_range)
-    q = {
-        'bool': {
-            'must': {'multi_match': {
-                'query': query_text,
-                'fields': ['subject^3', 'body'],
-            }},
-        }
-    }
-    if filters:
-        q['bool']['filter'] = filters
+    filters.append({'multi_match': {
+        'query': query_text,
+        'fields': ['subject', 'body'],
+    }})
+    q = {'bool': {'filter': filters}}
     return _es_search(es_url, index_name, _build_search(q, cp))
 
 
@@ -213,13 +208,8 @@ def latest_mail(es_url, index_name, cp, list_name=None):
 
 def mail_by_author(es_url, index_name, author, cp, list_name=None):
     filters = _filters(list_name, cp.date_range)
-    q = {
-        'bool': {
-            'must': {'match': {'author': {'query': author, 'operator': 'and'}}},
-        }
-    }
-    if filters:
-        q['bool']['filter'] = filters
+    filters.append({'match': {'author': {'query': author, 'operator': 'and'}}})
+    q = {'bool': {'filter': filters}}
     return _es_search(es_url, index_name, _build_search(q, cp))
 
 
