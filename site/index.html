@@ -352,9 +352,9 @@
 
             <span class="sep sep-icon" aria-hidden="true">•</span>
 
-            <a class="repo-link" href="https://github.com/ebarlas/openjdk-mail-search"
+            <a class="repo-link" href="https://github.com/ebarlas/openjdk-mail-search-elasticsearch"
                target="_blank" rel="noopener"
-               title="View source on GitHub: ebarlas/openjdk-mail-search" aria-label="GitHub repository">
+               title="View source on GitHub: ebarlas/openjdk-mail-search-elasticsearch" aria-label="GitHub repository">
                 <!-- GitHub mark (inline SVG) -->
                 <svg viewBox="0 0 16 16" aria-hidden="true" fill="currentColor">
                     <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38
@@ -364,7 +364,7 @@
                      1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48
                      0 1.07-.01 1.93-.01 2.19 0 .21.15.46.55.38A8.013 8.013 0 0 0 16 8c0-4.42-3.58-8-8-8z"/>
                 </svg>
-                <span class="sr-only">GitHub: ebarlas/openjdk-mail-search</span>
+                <span class="sr-only">GitHub: ebarlas/openjdk-mail-search-elasticsearch</span>
             </a>
         </div>
     </div>
@@ -486,8 +486,6 @@
                 <th>Subject</th>
                 <th>Email</th>
                 <th class="nowrap">Date</th>
-                <th class="nowrap">Month</th>
-                <th class="nowrap">ID</th>
             </tr>
             </thead>
             <tbody></tbody>
@@ -588,18 +586,6 @@
         sel.value = list;
     }
 
-    function openjdkLinks(item) {
-        const list = item.list;
-        const month = item.month;
-        const id = item.id;
-        const base = `https://mail.openjdk.org/pipermail/${encodeURIComponent(list)}`;
-        return {
-            list: `${base}/`,
-            month: `${base}/${encodeURIComponent(month)}/date.html`,
-            id: `${base}/${encodeURIComponent(month)}/${encodeURIComponent(id)}.html`,
-        };
-    }
-
     function clearTable() {
         resultsBody.innerHTML = '';
         nextBtn.hidden = true;
@@ -609,7 +595,6 @@
     function renderRows(items) {
         const frag = document.createDocumentFragment();
         for (const it of items) {
-            const links = openjdkLinks(it);
             const tr = document.createElement('tr');
 
             // Mark SCM-sourced records
@@ -621,9 +606,7 @@
             // List
             const tdList = document.createElement('td');
             const aList = document.createElement('a');
-            aList.href = links.list;
-            aList.target = '_blank';
-            aList.rel = 'noopener';
+            aList.href = '#';
             aList.title = `Search by list: ${it.list || ''}`;
             aList.textContent = it.list;
             aList.addEventListener('click', (e) => {
@@ -692,29 +675,6 @@
             timeEl.textContent = formatLocal(it.date);
             tdDate.appendChild(timeEl);
             tr.appendChild(tdDate);
-
-            // Month
-            const tdMonth = document.createElement('td');
-            const aMonth = document.createElement('a');
-            aMonth.href = links.month;
-            aMonth.target = '_blank';
-            aMonth.rel = 'noopener';
-            aMonth.title = `Open month page: ${it.list}/${it.month}`;
-            aMonth.textContent = it.month;
-            tdMonth.appendChild(aMonth);
-            tr.appendChild(tdMonth);
-
-            // ID → message link
-            const tdId = document.createElement('td');
-            tdId.className = 'nowrap';
-            const aId = document.createElement('a');
-            aId.href = links.id;
-            aId.target = '_blank';
-            aId.rel = 'noopener';
-            aId.title = `Open message: ${it.id}.html`;
-            aId.textContent = it.id;
-            tdId.appendChild(aId);
-            tr.appendChild(tdId);
 
             frag.appendChild(tr);
         }
