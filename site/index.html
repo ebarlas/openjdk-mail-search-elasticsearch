@@ -684,6 +684,7 @@
                 e.preventDefault();
                 setMode('text-search');
                 document.getElementById('q').value = it.subject ?? '';
+                document.getElementById('order').value = 'relevance';
                 doPushState();
                 doSearch();
             });
