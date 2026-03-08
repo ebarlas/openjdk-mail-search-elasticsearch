@@ -10,6 +10,7 @@ from sync import (
     CHECKPOINT_INDEX,
     MAILING_LISTS,
     bulk_index,
+    decode_header_value,
     get_checkpoint,
     get_latest_date,
     lambda_handler,
@@ -39,6 +40,27 @@ Date: Tue, 02 Jan 2024 00:00:00 +0000
 In-Reply-To: <msg-1@example.com>
 
 Reply from Bob.
+"""
+
+MBOX_RFC2047_AUTHOR = b"""\
+From sender@example.com Mon Jan  1 00:00:00 2024
+From: Alice =?utf-8?q?M=C3=BCller?= <amuller@example.com>
+Subject: =?utf-8?q?Caf=C3=A9_menu?=
+Message-ID: <rfc2047@example.com>
+Date: Mon, 01 Jan 2024 00:00:00 +0000
+
+Body text.
+"""
+
+MBOX_FOLDED_SUBJECT = b"""\
+From sender@example.com Mon Jan  1 00:00:00 2024
+From: Alice <alice@example.com>
+Subject: Re: RFR: 8372353: API to compute the byte length of a String encoded
+ in a given Charset [v21]
+Message-ID: <folded@example.com>
+Date: Mon, 01 Jan 2024 00:00:00 +0000
+
+Body text.
 """
 
 
@@ -109,6 +131,60 @@ class TestTransformMessage(unittest.TestCase):
         msg = MagicMock()
         msg.get.return_value = None
         self.assertIsNone(transform_message(msg, "test-list"))
+
+    def test_rfc2047_author(self):
+        messages = parse_mbox(MBOX_RFC2047_AUTHOR)
+        doc = transform_message(messages[0], "test-list")
+        self.assertEqual(doc["author"], "Alice Müller")
+        self.assertEqual(doc["email"], "amuller@example.com")
+        self.assertEqual(doc["subject"], "Café menu")
+
+    def test_folded_subject(self):
+        messages = parse_mbox(MBOX_FOLDED_SUBJECT)
+        doc = transform_message(messages[0], "test-list")
+        self.assertNotIn("\n", doc["subject"])
+        self.assertIn("String encoded in a given Charset", doc["subject"])
+
+
+class TestDecodeHeaderValue(unittest.TestCase):
+    def test_plain_text(self):
+        self.assertEqual(decode_header_value("Hello World"), "Hello World")
+
+    def test_empty(self):
+        self.assertEqual(decode_header_value(""), "")
+
+    def test_none(self):
+        self.assertIsNone(decode_header_value(None))
+
+    def test_q_encoding_utf8(self):
+        self.assertEqual(
+            decode_header_value("=?utf-8?q?M=C3=BCller?="),
+            "Müller",
+        )
+
+    def test_mixed_plain_and_encoded(self):
+        self.assertEqual(
+            decode_header_value("Alice =?utf-8?q?M=C3=BCller?="),
+            "Alice Müller",
+        )
+
+    def test_b_encoding(self):
+        self.assertEqual(
+            decode_header_value("=?utf-8?b?TcO8bGxlcg==?="),
+            "Müller",
+        )
+
+    def test_folded_header(self):
+        self.assertEqual(
+            decode_header_value("long subject\n continued here"),
+            "long subject continued here",
+        )
+
+    def test_leading_fold(self):
+        self.assertEqual(
+            decode_header_value("\n Re: RFR: subject text"),
+            "Re: RFR: subject text",
+        )
 
 
 # --- HTTP-dependent tests (mocked) ---

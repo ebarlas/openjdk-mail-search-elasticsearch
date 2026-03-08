@@ -21,9 +21,11 @@ import base64
 import json
 import logging
 import os
+import re
 import ssl
 import time
 from datetime import datetime, timedelta, timezone
+from email.header import decode_header, make_header
 from email.utils import parseaddr, parsedate_to_datetime
 from urllib.error import HTTPError
 from urllib.parse import urlparse, urlunparse
@@ -129,12 +131,20 @@ def parse_date(msg):
         return raw
 
 
+def decode_header_value(value):
+    """Decode RFC 2047 encoded-words and unfold RFC 5322 continuation lines."""
+    if not value:
+        return value
+    value = re.sub(r'\r?\n[ \t]+', ' ', value).strip()
+    return str(make_header(decode_header(value)))
+
+
 def transform_message(msg, list_name):
     message_id = strip_angle_brackets(msg.get("Message-ID"))
     if not message_id:
         return None
 
-    from_hdr = msg.get("From", "")
+    from_hdr = decode_header_value(msg.get("From", ""))
     author_name, author_email = parseaddr(from_hdr)
 
     return {
@@ -142,7 +152,7 @@ def transform_message(msg, list_name):
         "list": list_name,
         "message_id": message_id,
         "in_reply_to": strip_angle_brackets(msg.get("In-Reply-To")),
-        "subject": msg.get("Subject", ""),
+        "subject": decode_header_value(msg.get("Subject", "")),
         "author": author_name or author_email,
         "email": author_email,
         "date": parse_date(msg),
