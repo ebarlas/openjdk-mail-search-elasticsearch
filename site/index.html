@@ -457,6 +457,7 @@
                 <select id="order" name="order">
                     <option value="desc" selected>Newest first (desc)</option>
                     <option value="asc">Oldest first (asc)</option>
+                    <option value="relevance" hidden disabled>Most relevant</option>
                 </select>
             </div>
         </div>
@@ -524,7 +525,7 @@
     const formEl = document.getElementById('search-form');
 
     // State of the last query (for pagination only; not tracked in URL/history)
-    let last = {url: null, cursor: null};
+    let last = {url: null, cursor: null, page: null, total: null};
 
     // ---------- Helpers ----------
     const qs = o => Object.entries(o)
@@ -608,7 +609,7 @@
     function clearTable() {
         resultsBody.innerHTML = '';
         nextBtn.hidden = true;
-        last = {url: null, cursor: null};
+        last = {url: null, cursor: null, page: null, total: null};
     }
 
     function renderRows(items) {
@@ -725,10 +726,22 @@
         if (mode === 'text-search') show('field-text');
         if (mode === 'author') show('field-author');
         if (mode === 'email') show('field-email');
+
+        const relevanceOpt = document.querySelector('#order option[value="relevance"]');
+        if (mode === 'text-search') {
+            relevanceOpt.hidden = false;
+            relevanceOpt.disabled = false;
+        } else {
+            if (document.getElementById('order').value === 'relevance') {
+                document.getElementById('order').value = 'desc';
+            }
+            relevanceOpt.hidden = true;
+            relevanceOpt.disabled = true;
+        }
     }
 
     // ---------- Build API URL ----------
-    function buildUrl({mode, list, q, author, email, from, to, order, limit, cursor}) {
+    function buildUrl({mode, list, q, author, email, from, to, order, limit, cursor, page}) {
         const base = API_ROOT;
         const params = {order, limit};
         if (from) params.from = from;
@@ -746,6 +759,16 @@
                 return `${path}?${qs(params)}`;
             }
             case 'text-search': {
+                if (order === 'relevance') {
+                    const path = list
+                        ? `${base}/lists/${encodeURIComponent(list)}/mail/search/relevance`
+                        : `${base}/mail/search/relevance`;
+                    const rParams = {q, limit};
+                    if (page) rParams.page = page;
+                    if (from) rParams.from = from;
+                    if (to) rParams.to = to;
+                    return `${path}?${qs(rParams)}`;
+                }
                 const path = list ? `${base}/lists/${encodeURIComponent(list)}/mail/search` : `${base}/mail/search`;
                 return `${path}?${qs({...params, q})}`;
             }
@@ -801,19 +824,30 @@
             const from = localToUtcZ(document.getElementById('from').value);
             const to = localToUtcZ(document.getElementById('to').value);
 
+            const isRelevance = mode === 'text-search' && q && order === 'relevance';
+            const page = isRelevance ? (next ? (last.page || 0) + 1 : 1) : undefined;
+
             const url = buildUrl({
                 mode, list, q, author, email, from, to, order, limit,
-                cursor: next ? last.cursor : null
+                cursor: next && !isRelevance ? last.cursor : null,
+                page
             });
 
             const data = await fetchPage(url);
             const items = data.items || [];
             renderRows(items);
 
-            last = {url, cursor: data.cursor || null};
-            nextBtn.hidden = !last.cursor;
-
-            setStatus(items.length ? `${items.length} result(s)` : 'No results');
+            if (isRelevance) {
+                const total = data.total || 0;
+                const shown = resultsBody.children.length;
+                last = {url, cursor: null, page, total};
+                nextBtn.hidden = shown >= total;
+                setStatus(items.length ? `About ${total.toLocaleString()} result(s)` : 'No results');
+            } else {
+                last = {url, cursor: data.cursor || null, page: null, total: null};
+                nextBtn.hidden = !last.cursor;
+                setStatus(items.length ? `${items.length} result(s)` : 'No results');
+            }
         } catch (err) {
             setStatus(String(err.message || err), true);
             nextBtn.hidden = true;
