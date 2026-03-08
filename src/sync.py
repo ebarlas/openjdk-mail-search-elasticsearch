@@ -24,6 +24,7 @@ import os
 import re
 import ssl
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, timezone
 from email.header import decode_header, make_header
 from email.utils import parseaddr, parsedate_to_datetime
@@ -36,6 +37,8 @@ from mbox import body_text, build_export_url, download_mbox, parse_mbox
 logger = logging.getLogger(__name__)
 
 BULK_BATCH_SIZE = 500
+DOWNLOAD_RETRIES = 3
+DOWNLOAD_RETRY_DELAY = 5
 ORIGIN_YEAR, ORIGIN_MONTH = 2007, 1
 CHECKPOINT_INDEX = 'openjdk-mail-checkpoints'
 SAFETY_BUFFER_DAYS = 1
@@ -326,11 +329,16 @@ def sync_list(list_name, es_url, index_name, start_ym, checkpoint_index,
         day = start_day if is_first else 1
         is_first = False
         url = build_export_url(list_name, year, month, start_day=day)
-        try:
-            raw, compressed_size, dl_elapsed = download_mbox(url)
-        except Exception as e:
-            logger.error("%d-%02d: download failed: %s", year, month, e)
-            continue
+        for attempt in range(1, DOWNLOAD_RETRIES + 1):
+            try:
+                raw, compressed_size, dl_elapsed = download_mbox(url)
+                break
+            except Exception:
+                if attempt == DOWNLOAD_RETRIES:
+                    raise
+                logger.warning("%d-%02d: download attempt %d/%d failed, retrying in %ds",
+                               year, month, attempt, DOWNLOAD_RETRIES, DOWNLOAD_RETRY_DELAY)
+                time.sleep(DOWNLOAD_RETRY_DELAY)
 
         if not raw:
             logger.info("%d-%02d: empty", year, month)
@@ -424,6 +432,8 @@ def main():
     parser.add_argument("--full", action="store_true",
                         help="Full sync: re-download and re-index all messages, "
                              "overwriting existing documents")
+    parser.add_argument("--workers", type=int, default=1,
+                        help="Number of lists to sync concurrently (default: 1)")
     parser.add_argument("--es-url", default="http://localhost:9200", help="Elasticsearch URL")
     parser.add_argument("--index", default="openjdk-mail", help="Target index name")
     parser.add_argument("--start", help="Start from YYYY-MM (overrides auto-detection)")
@@ -442,9 +452,29 @@ def main():
         start_ym = (int(parts[0]), int(parts[1]))
 
     lists = MAILING_LISTS if args.sync_all else [args.list_name]
-    for list_name in lists:
-        sync_list(list_name, es_url, args.index, start_ym,
-                  checkpoint_index=args.checkpoint_index, full=args.full)
+    if args.workers > 1 and len(lists) > 1:
+        logger.info("Syncing %d lists with %d workers", len(lists), args.workers)
+        failed = []
+        with ThreadPoolExecutor(max_workers=args.workers) as pool:
+            futures = {
+                pool.submit(sync_list, name, es_url, args.index, start_ym,
+                            args.checkpoint_index, full=args.full): name
+                for name in lists
+            }
+            for future in as_completed(futures):
+                name = futures[future]
+                try:
+                    future.result()
+                except Exception:
+                    logger.exception("Failed to sync %s", name)
+                    failed.append(name)
+        if failed:
+            logger.error("Failed lists: %s", ", ".join(failed))
+            raise SystemExit(1)
+    else:
+        for list_name in lists:
+            sync_list(list_name, es_url, args.index, start_ym,
+                      checkpoint_index=args.checkpoint_index, full=args.full)
 
 
 if __name__ == "__main__":
