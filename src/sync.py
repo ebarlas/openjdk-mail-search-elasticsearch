@@ -282,9 +282,10 @@ def put_checkpoint(es_url, checkpoint_index, list_name, had_updates):
     logger.info("Checkpoint %s: %s (updated=%s)", list_name, now, had_updates)
 
 
-def sync_list(list_name, es_url, index_name, start_ym, checkpoint_index):
+def sync_list(list_name, es_url, index_name, start_ym, checkpoint_index,
+              full=False):
     start_day = 1
-    if start_ym is None:
+    if start_ym is None and not full:
         cp = get_checkpoint(es_url, checkpoint_index, list_name)
         if cp:
             start_ym = (cp[0], cp[1])
@@ -299,23 +300,24 @@ def sync_list(list_name, es_url, index_name, start_ym, checkpoint_index):
                                 tzinfo=timezone.utc) - timedelta(days=SAFETY_BUFFER_DAYS)
             start_ym = (buffered.year, buffered.month)
             start_day = buffered.day
-    elif len(start_ym) == 3:
+    elif start_ym and len(start_ym) == 3:
         start_day = start_ym[2]
         start_ym = (start_ym[0], start_ym[1])
 
+    label = "Full sync" if full else "Syncing"
     if start_ym:
         months = month_range(start_ym[0], start_ym[1])
         if start_day > 1:
-            logger.info("Syncing %s from %d-%02d-%02d, %d months",
-                        list_name, start_ym[0], start_ym[1], start_day, len(months))
+            logger.info("%s %s from %d-%02d-%02d, %d months",
+                        label, list_name, start_ym[0], start_ym[1], start_day, len(months))
         else:
-            logger.info("Syncing %s from %d-%02d, %d months",
-                        list_name, start_ym[0], start_ym[1], len(months))
+            logger.info("%s %s from %d-%02d, %d months",
+                        label, list_name, start_ym[0], start_ym[1], len(months))
     else:
         months = month_range(ORIGIN_YEAR, ORIGIN_MONTH)
-        logger.info("Full seed for %s, %d months", list_name, len(months))
+        logger.info("%s %s, %d months", label, list_name, len(months))
 
-    cumulative_new = 0
+    cumulative_indexed = 0
     cumulative_existing = 0
     t_start = time.monotonic()
     is_first = True
@@ -344,24 +346,28 @@ def sync_list(list_name, es_url, index_name, start_ym, checkpoint_index):
             else:
                 skipped += 1
 
-        new_docs, existing = filter_existing(es_url, index_name, docs)
+        if full:
+            new_docs, existing = docs, 0
+        else:
+            new_docs, existing = filter_existing(es_url, index_name, docs)
         ok, err = bulk_index(es_url, index_name, new_docs)
-        cumulative_new += ok
+        cumulative_indexed += ok
         cumulative_existing += existing
         elapsed = time.monotonic() - t_start
 
         logger.info(
-            "%d-%02d: %d parsed, %d new, %d existing, %d skipped, %d errors"
-            " | cumulative: %d new, %d existing | %dms",
+            "%d-%02d: %d parsed, %d indexed, %d existing, %d skipped, %d errors"
+            " | cumulative: %d indexed, %d existing | %dms",
             year, month, len(messages), ok, existing, skipped, err,
-            cumulative_new, cumulative_existing, elapsed * 1000,
+            cumulative_indexed, cumulative_existing, elapsed * 1000,
         )
 
     total_elapsed = time.monotonic() - t_start
-    logger.info("Done %s. %d new, %d existing in %dms",
-                list_name, cumulative_new, cumulative_existing, total_elapsed * 1000)
+    logger.info("Done %s. %d indexed, %d existing in %dms",
+                list_name, cumulative_indexed, cumulative_existing, total_elapsed * 1000)
 
-    put_checkpoint(es_url, checkpoint_index, list_name, had_updates=(cumulative_new > 0))
+    put_checkpoint(es_url, checkpoint_index, list_name,
+                   had_updates=(cumulative_indexed > 0))
 
 
 MAILING_LISTS = [
@@ -401,7 +407,8 @@ def lambda_handler(event, context):
     index_name = os.environ.get('INDEX_NAME', 'openjdk-mail')
     checkpoint_index = os.environ.get('CHECKPOINT_INDEX', CHECKPOINT_INDEX)
     for list_name in MAILING_LISTS:
-        sync_list(list_name, es_url, index_name, start_ym=None, checkpoint_index=checkpoint_index)
+        sync_list(list_name, es_url, index_name, start_ym=None,
+                  checkpoint_index=checkpoint_index)
 
 
 def main():
@@ -410,13 +417,22 @@ def main():
         format='[%(asctime)s] %(levelname)s %(name)s - %(message)s',
     )
     parser = argparse.ArgumentParser(description="Seed/sync ES index from HyperkItty mbox archives")
-    parser.add_argument("list_name", help="Mailing list name, e.g. amber-dev")
+    parser.add_argument("list_name", nargs="?",
+                        help="Mailing list name, e.g. amber-dev (omit when using --all)")
+    parser.add_argument("--all", action="store_true", dest="sync_all",
+                        help="Sync all known mailing lists")
+    parser.add_argument("--full", action="store_true",
+                        help="Full sync: re-download and re-index all messages, "
+                             "overwriting existing documents")
     parser.add_argument("--es-url", default="http://localhost:9200", help="Elasticsearch URL")
     parser.add_argument("--index", default="openjdk-mail", help="Target index name")
     parser.add_argument("--start", help="Start from YYYY-MM (overrides auto-detection)")
     parser.add_argument("--checkpoint-index", default=CHECKPOINT_INDEX,
                         help="ES index for sync checkpoints (default: %(default)s)")
     args = parser.parse_args()
+
+    if not args.list_name and not args.sync_all:
+        parser.error("provide a list name or use --all")
 
     es_url = _init_es_auth(args.es_url)
 
@@ -425,8 +441,10 @@ def main():
         parts = args.start.split("-")
         start_ym = (int(parts[0]), int(parts[1]))
 
-    sync_list(args.list_name, es_url, args.index, start_ym,
-              checkpoint_index=args.checkpoint_index)
+    lists = MAILING_LISTS if args.sync_all else [args.list_name]
+    for list_name in lists:
+        sync_list(list_name, es_url, args.index, start_ym,
+                  checkpoint_index=args.checkpoint_index, full=args.full)
 
 
 if __name__ == "__main__":

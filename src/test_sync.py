@@ -343,25 +343,33 @@ class TestGetCheckpoint(unittest.TestCase):
 
 class TestPutCheckpoint(unittest.TestCase):
     @patch("sync.urlopen")
-    def test_writes_checkpoint(self, mock_urlopen):
-        mock_urlopen.return_value = mock_response(b'{"result": "created"}')
-        put_checkpoint("http://fake:9200", "cp-index", "amber-dev")
+    def test_writes_checkpoint_with_update(self, mock_urlopen):
+        mock_urlopen.return_value = mock_response(b'{"result": "updated"}')
+        put_checkpoint("http://fake:9200", "cp-index", "amber-dev", had_updates=True)
         req = mock_urlopen.call_args[0][0]
-        self.assertEqual(req.get_method(), "PUT")
-        self.assertIn("cp-index/_doc/amber-dev", req.full_url)
+        self.assertEqual(req.get_method(), "POST")
+        self.assertIn("cp-index/_update/amber-dev", req.full_url)
         body = json.loads(req.data)
-        self.assertEqual(body["list"], "amber-dev")
-        self.assertIn("synced_at", body)
+        self.assertEqual(body["doc"]["list"], "amber-dev")
+        self.assertIn("synced_at", body["doc"])
+        self.assertIn("updated_at", body["doc"])
+
+    @patch("sync.urlopen")
+    def test_writes_checkpoint_without_update(self, mock_urlopen):
+        mock_urlopen.return_value = mock_response(b'{"result": "updated"}')
+        put_checkpoint("http://fake:9200", "cp-index", "amber-dev", had_updates=False)
+        body = json.loads(mock_urlopen.call_args[0][0].data)
+        self.assertNotIn("updated_at", body["doc"])
 
 
-class TestSeedListCheckpoints(unittest.TestCase):
+class TestSyncListCheckpoints(unittest.TestCase):
     @patch("sync.put_checkpoint")
     @patch("sync.download_mbox", return_value=(b"", 0, 0.0))
     @patch("sync.get_checkpoint", return_value=(2026, 3, 5))
     def test_uses_checkpoint_over_resolve_start(self, mock_get_cp, mock_dl, mock_put_cp):
         sync_list("test-list", "http://fake:9200", "idx", None, "cp-index")
         mock_get_cp.assert_called_once_with("http://fake:9200", "cp-index", "test-list")
-        mock_put_cp.assert_called_once_with("http://fake:9200", "cp-index", "test-list")
+        mock_put_cp.assert_called_once()
 
     @patch("sync.put_checkpoint")
     @patch("sync.download_mbox", return_value=(b"", 0, 0.0))
@@ -380,6 +388,39 @@ class TestSeedListCheckpoints(unittest.TestCase):
         sync_list("test-list", "http://fake:9200", "idx", (2026, 3), "cp-index")
         mock_get_cp.assert_not_called()
         mock_put_cp.assert_called_once()
+
+    @patch("sync.put_checkpoint")
+    @patch("sync.download_mbox", return_value=(b"", 0, 0.0))
+    @patch("sync.get_checkpoint")
+    @patch("sync.resolve_start")
+    def test_full_bypasses_checkpoint_and_resolve(self, mock_resolve, mock_get_cp,
+                                                  mock_dl, mock_put_cp):
+        sync_list("test-list", "http://fake:9200", "idx", None, "cp-index", full=True)
+        mock_get_cp.assert_not_called()
+        mock_resolve.assert_not_called()
+        mock_put_cp.assert_called_once()
+
+    @patch("sync.put_checkpoint")
+    @patch("sync.bulk_index", return_value=(2, 0))
+    @patch("sync.filter_existing")
+    @patch("sync.parse_mbox")
+    @patch("sync.download_mbox", return_value=(b"data", 4, 0.0))
+    @patch("sync.get_checkpoint")
+    def test_full_skips_filter_existing(self, mock_get_cp, mock_dl, mock_parse,
+                                        mock_filter, mock_bulk, mock_put_cp):
+        mock_msg = MagicMock()
+        mock_msg.get.side_effect = lambda k, d="": {
+            "Message-ID": "<a@b>", "From": "X <x@b>",
+            "Subject": "S", "Date": "Mon, 01 Jan 2024 00:00:00 +0000",
+        }.get(k, d)
+        mock_msg.is_multipart.return_value = False
+        mock_msg.get_payload.return_value = b"body"
+        mock_msg.get_content_charset.return_value = "utf-8"
+        mock_msg.get_content_type.return_value = "text/plain"
+        mock_parse.return_value = [mock_msg]
+        sync_list("test-list", "http://fake:9200", "idx", (2026, 3), "cp-index", full=True)
+        mock_filter.assert_not_called()
+        mock_bulk.assert_called_once()
 
 
 class TestLambdaHandler(unittest.TestCase):
