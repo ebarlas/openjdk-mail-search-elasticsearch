@@ -14,8 +14,6 @@ from server import (
     common_params,
     convert_hit,
     convert_hits,
-    convert_relevance_hit,
-    convert_relevance_results,
     extract_param,
     get_status,
     json_response,
@@ -167,6 +165,22 @@ class TestCommonParams(unittest.TestCase):
         cp = common_params({'cursor': [encoded]})
         self.assertEqual(cp.search_after, cursor_val)
 
+    def test_exclude_automated_default(self):
+        cp = common_params({})
+        self.assertFalse(cp.exclude_automated)
+
+    def test_exclude_automated_false_param(self):
+        cp = common_params({'automated': ['false']})
+        self.assertTrue(cp.exclude_automated)
+
+    def test_exclude_automated_true_param(self):
+        cp = common_params({'automated': ['true']})
+        self.assertFalse(cp.exclude_automated)
+
+    def test_exclude_automated_case_insensitive(self):
+        cp = common_params({'automated': ['False']})
+        self.assertTrue(cp.exclude_automated)
+
 
 class TestFilters(unittest.TestCase):
     def test_empty(self):
@@ -183,6 +197,25 @@ class TestFilters(unittest.TestCase):
     def test_both(self):
         f = _filters(list_name='net-dev', date_range=('2025-01-01', '2025-12-31'))
         self.assertEqual(len(f), 2)
+
+    def test_exclude_automated(self):
+        f = _filters(exclude_automated=True)
+        self.assertEqual(len(f), 1)
+        self.assertEqual(f[0], {'bool': {'must_not': [
+            {'wildcard': {'message_id': {'value': '*@github.com'}}},
+        ]}})
+
+    def test_exclude_automated_false(self):
+        f = _filters(exclude_automated=False)
+        self.assertEqual(f, [])
+
+    def test_all_filters(self):
+        f = _filters(list_name='net-dev', date_range=('2025-01-01', '2025-12-31'),
+                      exclude_automated=True)
+        self.assertEqual(len(f), 3)
+        self.assertTrue(any('term' in c for c in f))
+        self.assertTrue(any('range' in c for c in f))
+        self.assertTrue(any('bool' in c and 'must_not' in c['bool'] for c in f))
 
 
 class TestConvertHit(unittest.TestCase):
@@ -442,6 +475,51 @@ class TestSearchMail(unittest.TestCase):
         self.assertEqual(body['search_after'], [1724529444000, 'msg-1@example.com'])
 
 
+class TestSearchMailExcludeAutomated(unittest.TestCase):
+    @patch('server.urlopen')
+    def test_exclude_automated_filter(self, mock_urlopen):
+        mock_urlopen.return_value = mock_response(json.dumps(ES_HITS_RESPONSE).encode())
+        cp = CommonParams(forward=False, limit=10, search_after=None,
+                          date_range=None, exclude_automated=True)
+        search_mail('http://es:9200', 'idx', 'SSLSocket', cp)
+
+        req = mock_urlopen.call_args[0][0]
+        body = json.loads(req.data)
+        filters = body['query']['bool']['filter']
+        auto_filter = [f for f in filters if 'bool' in f and 'must_not' in f.get('bool', {})]
+        self.assertEqual(len(auto_filter), 1)
+        wildcard = auto_filter[0]['bool']['must_not'][0]
+        self.assertEqual(wildcard, {'wildcard': {'message_id': {'value': '*@github.com'}}})
+
+    @patch('server.urlopen')
+    def test_no_filter_by_default(self, mock_urlopen):
+        mock_urlopen.return_value = mock_response(json.dumps(ES_HITS_RESPONSE).encode())
+        cp = CommonParams(forward=False, limit=10, search_after=None,
+                          date_range=None, exclude_automated=False)
+        search_mail('http://es:9200', 'idx', 'SSLSocket', cp)
+
+        req = mock_urlopen.call_args[0][0]
+        body = json.loads(req.data)
+        filters = body['query']['bool']['filter']
+        auto_filter = [f for f in filters if 'bool' in f and 'must_not' in f.get('bool', {})]
+        self.assertEqual(len(auto_filter), 0)
+
+
+class TestLatestMailExcludeAutomated(unittest.TestCase):
+    @patch('server.urlopen')
+    def test_exclude_automated(self, mock_urlopen):
+        mock_urlopen.return_value = mock_response(json.dumps(ES_HITS_RESPONSE).encode())
+        cp = CommonParams(forward=False, limit=10, search_after=None,
+                          date_range=None, exclude_automated=True)
+        latest_mail('http://es:9200', 'idx', cp)
+
+        req = mock_urlopen.call_args[0][0]
+        body = json.loads(req.data)
+        filters = body['query']['bool']['filter']
+        auto_filter = [f for f in filters if 'bool' in f and 'must_not' in f.get('bool', {})]
+        self.assertEqual(len(auto_filter), 1)
+
+
 class TestLatestMail(unittest.TestCase):
     @patch('server.urlopen')
     def test_list_scoped(self, mock_urlopen):
@@ -513,7 +591,6 @@ class TestGetStatus(unittest.TestCase):
 
 ES_RELEVANCE_RESPONSE = {
     'hits': {
-        'total': {'value': 42, 'relation': 'eq'},
         'hits': [
             {
                 '_id': 'msg-1@example.com',
@@ -526,10 +603,7 @@ ES_RELEVANCE_RESPONSE = {
                     'email': 'brian.goetz@oracle.com',
                     'subject': 'SSL socket behavior',
                 },
-                'highlight': {
-                    'subject': ['<em>SSL</em> socket behavior'],
-                    'body': ['...the <em>SSL</em> implementation...'],
-                },
+                'sort': [12.5, 1724529444000, 'msg-1@example.com'],
             },
             {
                 '_id': 'msg-2@example.com',
@@ -542,84 +616,19 @@ ES_RELEVANCE_RESPONSE = {
                     'email': 'alan.bateman@oracle.com',
                     'subject': 'Re: SSL socket behavior',
                 },
-                'highlight': {
-                    'body': ['...new <em>SSL</em> context...'],
-                },
+                'sort': [8.3, 1724580000000, 'msg-2@example.com'],
             },
         ],
     },
 }
 
 
-class TestConvertRelevanceHit(unittest.TestCase):
-    def test_includes_score(self):
-        hit = ES_RELEVANCE_RESPONSE['hits']['hits'][0]
-        item = convert_relevance_hit(hit)
-        self.assertEqual(item['score'], 12.5)
-
-    def test_includes_highlights(self):
-        hit = ES_RELEVANCE_RESPONSE['hits']['hits'][0]
-        item = convert_relevance_hit(hit)
-        self.assertIn('highlights', item)
-        self.assertEqual(item['highlights']['subject'], ['<em>SSL</em> socket behavior'])
-        self.assertEqual(item['highlights']['body'], ['...the <em>SSL</em> implementation...'])
-
-    def test_partial_highlights(self):
-        hit = ES_RELEVANCE_RESPONSE['hits']['hits'][1]
-        item = convert_relevance_hit(hit)
-        self.assertIn('body', item['highlights'])
-        self.assertNotIn('subject', item['highlights'])
-
-    def test_no_highlight_key(self):
-        hit = {
-            '_id': 'x', '_score': 1.0,
-            '_source': {
-                'list': 'test', 'message_id': 'x', 'date': '',
-                'author': '', 'email': '', 'subject': '',
-            },
-        }
-        item = convert_relevance_hit(hit)
-        self.assertNotIn('highlights', item)
-
-    def test_preserves_base_fields(self):
-        hit = ES_RELEVANCE_RESPONSE['hits']['hits'][0]
-        item = convert_relevance_hit(hit)
-        self.assertEqual(item['list'], 'net-dev')
-        self.assertEqual(item['author'], 'Brian Goetz')
-        self.assertEqual(item['subject'], 'SSL socket behavior')
-        self.assertEqual(item['month'], '2025-August')
-
-
-class TestConvertRelevanceResults(unittest.TestCase):
-    def test_total_and_pagination(self):
-        res = convert_relevance_results(ES_RELEVANCE_RESPONSE, page=1, page_size=10)
-        self.assertEqual(res['total'], 42)
-        self.assertEqual(res['page'], 1)
-        self.assertEqual(res['page_size'], 10)
-        self.assertEqual(len(res['items']), 2)
-
-    def test_page_two(self):
-        res = convert_relevance_results(ES_RELEVANCE_RESPONSE, page=2, page_size=25)
-        self.assertEqual(res['page'], 2)
-        self.assertEqual(res['page_size'], 25)
-
-    def test_empty_hits(self):
-        result = {'hits': {'total': {'value': 0, 'relation': 'eq'}, 'hits': []}}
-        res = convert_relevance_results(result, page=1, page_size=10)
-        self.assertEqual(res['total'], 0)
-        self.assertEqual(res['items'], [])
-
-    def test_integer_total(self):
-        result = {'hits': {'total': 99, 'hits': []}}
-        res = convert_relevance_results(result, page=1, page_size=10)
-        self.assertEqual(res['total'], 99)
-
-
 class TestRelevanceSearch(unittest.TestCase):
     @patch('server.urlopen')
     def test_query_structure(self, mock_urlopen):
         mock_urlopen.return_value = mock_response(json.dumps(ES_RELEVANCE_RESPONSE).encode())
-        relevance_search('http://es:9200', 'idx', 'SSLSocket', limit=10, page=1)
+        cp = CommonParams(forward=False, limit=10, search_after=None, date_range=None)
+        relevance_search('http://es:9200', 'idx', 'SSLSocket', cp)
 
         req = mock_urlopen.call_args[0][0]
         body = json.loads(req.data)
@@ -631,53 +640,44 @@ class TestRelevanceSearch(unittest.TestCase):
         self.assertEqual(mm['type'], 'best_fields')
 
     @patch('server.urlopen')
-    def test_highlight_config(self, mock_urlopen):
+    def test_sort_by_score_with_tiebreakers(self, mock_urlopen):
         mock_urlopen.return_value = mock_response(json.dumps(ES_RELEVANCE_RESPONSE).encode())
-        relevance_search('http://es:9200', 'idx', 'test', limit=10, page=1)
+        cp = CommonParams(forward=False, limit=10, search_after=None, date_range=None)
+        relevance_search('http://es:9200', 'idx', 'test', cp)
 
         req = mock_urlopen.call_args[0][0]
         body = json.loads(req.data)
-
-        hl = body['highlight']
-        self.assertEqual(hl['pre_tags'], ['<em>'])
-        self.assertEqual(hl['post_tags'], ['</em>'])
-        self.assertEqual(hl['fields']['subject']['number_of_fragments'], 0)
-        self.assertEqual(hl['fields']['body']['fragment_size'], 150)
-        self.assertEqual(hl['fields']['body']['number_of_fragments'], 3)
+        self.assertEqual(body['sort'], [
+            {'_score': 'desc'}, {'date': 'desc'}, {'message_id': 'desc'},
+        ])
 
     @patch('server.urlopen')
-    def test_sort_by_score(self, mock_urlopen):
+    def test_no_track_total_hits(self, mock_urlopen):
         mock_urlopen.return_value = mock_response(json.dumps(ES_RELEVANCE_RESPONSE).encode())
-        relevance_search('http://es:9200', 'idx', 'test', limit=10, page=1)
+        cp = CommonParams(forward=False, limit=10, search_after=None, date_range=None)
+        relevance_search('http://es:9200', 'idx', 'test', cp)
 
         req = mock_urlopen.call_args[0][0]
         body = json.loads(req.data)
-        self.assertEqual(body['sort'], [{'_score': 'desc'}, {'date': 'desc'}])
+        self.assertNotIn('track_total_hits', body)
+        self.assertNotIn('from', body)
 
     @patch('server.urlopen')
-    def test_pagination_offset(self, mock_urlopen):
+    def test_search_after(self, mock_urlopen):
         mock_urlopen.return_value = mock_response(json.dumps(ES_RELEVANCE_RESPONSE).encode())
-        relevance_search('http://es:9200', 'idx', 'test', limit=10, page=3)
+        cursor = [8.3, 1724580000000, 'msg-2@example.com']
+        cp = CommonParams(forward=False, limit=10, search_after=cursor, date_range=None)
+        relevance_search('http://es:9200', 'idx', 'test', cp)
 
         req = mock_urlopen.call_args[0][0]
         body = json.loads(req.data)
-        self.assertEqual(body['from'], 20)
-        self.assertEqual(body['size'], 10)
-
-    @patch('server.urlopen')
-    def test_track_total_hits(self, mock_urlopen):
-        mock_urlopen.return_value = mock_response(json.dumps(ES_RELEVANCE_RESPONSE).encode())
-        relevance_search('http://es:9200', 'idx', 'test', limit=10, page=1)
-
-        req = mock_urlopen.call_args[0][0]
-        body = json.loads(req.data)
-        self.assertTrue(body['track_total_hits'])
+        self.assertEqual(body['search_after'], cursor)
 
     @patch('server.urlopen')
     def test_list_filter(self, mock_urlopen):
         mock_urlopen.return_value = mock_response(json.dumps(ES_RELEVANCE_RESPONSE).encode())
-        relevance_search('http://es:9200', 'idx', 'test', limit=10, page=1,
-                         list_name='net-dev')
+        cp = CommonParams(forward=False, limit=10, search_after=None, date_range=None)
+        relevance_search('http://es:9200', 'idx', 'test', cp, list_name='net-dev')
 
         req = mock_urlopen.call_args[0][0]
         body = json.loads(req.data)
@@ -687,8 +687,9 @@ class TestRelevanceSearch(unittest.TestCase):
     @patch('server.urlopen')
     def test_date_range_filter(self, mock_urlopen):
         mock_urlopen.return_value = mock_response(json.dumps(ES_RELEVANCE_RESPONSE).encode())
-        relevance_search('http://es:9200', 'idx', 'test', limit=10, page=1,
-                         date_range=('2025-01-01', '2025-12-31'))
+        cp = CommonParams(forward=False, limit=10, search_after=None,
+                          date_range=('2025-01-01', '2025-12-31'))
+        relevance_search('http://es:9200', 'idx', 'test', cp)
 
         req = mock_urlopen.call_args[0][0]
         body = json.loads(req.data)
@@ -700,16 +701,31 @@ class TestRelevanceSearch(unittest.TestCase):
     @patch('server.urlopen')
     def test_no_filter_when_unscoped(self, mock_urlopen):
         mock_urlopen.return_value = mock_response(json.dumps(ES_RELEVANCE_RESPONSE).encode())
-        relevance_search('http://es:9200', 'idx', 'test', limit=10, page=1)
+        cp = CommonParams(forward=False, limit=10, search_after=None, date_range=None)
+        relevance_search('http://es:9200', 'idx', 'test', cp)
 
         req = mock_urlopen.call_args[0][0]
         body = json.loads(req.data)
         self.assertNotIn('filter', body['query']['bool'])
 
     @patch('server.urlopen')
+    def test_exclude_automated(self, mock_urlopen):
+        mock_urlopen.return_value = mock_response(json.dumps(ES_RELEVANCE_RESPONSE).encode())
+        cp = CommonParams(forward=False, limit=10, search_after=None, date_range=None,
+                          exclude_automated=True)
+        relevance_search('http://es:9200', 'idx', 'test', cp)
+
+        req = mock_urlopen.call_args[0][0]
+        body = json.loads(req.data)
+        filters = body['query']['bool']['filter']
+        auto_filter = [f for f in filters if 'bool' in f and 'must_not' in f.get('bool', {})]
+        self.assertEqual(len(auto_filter), 1)
+
+    @patch('server.urlopen')
     def test_body_not_in_source(self, mock_urlopen):
         mock_urlopen.return_value = mock_response(json.dumps(ES_RELEVANCE_RESPONSE).encode())
-        relevance_search('http://es:9200', 'idx', 'test', limit=10, page=1)
+        cp = CommonParams(forward=False, limit=10, search_after=None, date_range=None)
+        relevance_search('http://es:9200', 'idx', 'test', cp)
 
         req = mock_urlopen.call_args[0][0]
         body = json.loads(req.data)
@@ -750,46 +766,15 @@ class TestLambdaRoutingRelevance(unittest.TestCase):
 
     @patch('server.relevance_search')
     @patch.dict(os.environ, {'ES_URL': 'http://es:9200'})
-    def test_response_shape(self, mock_rs):
+    def test_response_uses_cursor_format(self, mock_rs):
         mock_rs.return_value = ES_RELEVANCE_RESPONSE
-        event = cf_event('/api/mail/search/relevance', 'q=SSL')
+        event = cf_event('/api/mail/search/relevance', 'q=SSL&limit=2')
         resp = lambda_handler(event, None)
         body = json.loads(resp['body'])
-        self.assertEqual(body['total'], 42)
-        self.assertEqual(body['page'], 1)
-        self.assertEqual(body['page_size'], 10)
         self.assertEqual(len(body['items']), 2)
-        self.assertEqual(body['items'][0]['score'], 12.5)
-        self.assertIn('highlights', body['items'][0])
-
-    @patch('server.relevance_search')
-    @patch.dict(os.environ, {'ES_URL': 'http://es:9200'})
-    def test_page_param(self, mock_rs):
-        mock_rs.return_value = ES_RELEVANCE_RESPONSE
-        event = cf_event('/api/mail/search/relevance', 'q=SSL&page=3')
-        resp = lambda_handler(event, None)
-        self.assertEqual(resp['status'], '200')
-        args, _ = mock_rs.call_args
-        self.assertEqual(args[4], 3)  # page argument
-
-    @patch('server.relevance_search')
-    @patch.dict(os.environ, {'ES_URL': 'http://es:9200'})
-    def test_page_defaults_to_one(self, mock_rs):
-        mock_rs.return_value = ES_RELEVANCE_RESPONSE
-        event = cf_event('/api/mail/search/relevance', 'q=SSL')
-        lambda_handler(event, None)
-        args, _ = mock_rs.call_args
-        self.assertEqual(args[4], 1)
-
-    @patch('server.relevance_search')
-    @patch.dict(os.environ, {'ES_URL': 'http://es:9200'})
-    def test_date_range_passed(self, mock_rs):
-        mock_rs.return_value = ES_RELEVANCE_RESPONSE
-        event = cf_event('/api/mail/search/relevance',
-                         'q=SSL&from=2025-01-01&to=2025-12-31')
-        lambda_handler(event, None)
-        _, kwargs = mock_rs.call_args
-        self.assertEqual(kwargs['date_range'], ('2025-01-01', '2025-12-31'))
+        self.assertIn('cursor', body)
+        self.assertNotIn('total', body)
+        self.assertNotIn('page', body)
 
     @patch('server.search_mail')
     @patch.dict(os.environ, {'ES_URL': 'http://es:9200'})

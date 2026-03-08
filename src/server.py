@@ -62,6 +62,7 @@ class CommonParams(NamedTuple):
     limit: int
     search_after: object  # list or None
     date_range: object  # tuple(str, str) or None
+    exclude_automated: bool = False
 
 
 class ApiRequest(NamedTuple):
@@ -120,9 +121,13 @@ def common_params(params):
     from_date = extract_param(params, 'from')
     to_date = extract_param(params, 'to')
     date_range = (from_date, to_date) if from_date and to_date else None
+    exclude_automated = extract_param(
+        params, 'automated', False, lambda p: p.lower() == 'false',
+    )
     return CommonParams(
         forward=forward, limit=limit,
         search_after=search_after, date_range=date_range,
+        exclude_automated=exclude_automated,
     )
 
 
@@ -177,18 +182,22 @@ def _build_search(query, cp):
     return body
 
 
-def _filters(list_name=None, date_range=None):
+def _filters(list_name=None, date_range=None, exclude_automated=False):
     f = []
     if list_name:
         f.append({'term': {'list': list_name}})
     if date_range:
         start, end = date_range
         f.append({'range': {'date': {'gte': start, 'lte': end}}})
+    if exclude_automated:
+        f.append({'bool': {'must_not': [
+            {'wildcard': {'message_id': {'value': '*@github.com'}}},
+        ]}})
     return f
 
 
 def search_mail(es_url, index_name, query_text, cp, list_name=None):
-    filters = _filters(list_name, cp.date_range)
+    filters = _filters(list_name, cp.date_range, cp.exclude_automated)
     filters.append({'multi_match': {
         'query': query_text,
         'fields': ['subject', 'body'],
@@ -198,7 +207,7 @@ def search_mail(es_url, index_name, query_text, cp, list_name=None):
 
 
 def latest_mail(es_url, index_name, cp, list_name=None):
-    filters = _filters(list_name, cp.date_range)
+    filters = _filters(list_name, cp.date_range, cp.exclude_automated)
     if filters:
         q = {'bool': {'filter': filters}}
     else:
@@ -207,23 +216,22 @@ def latest_mail(es_url, index_name, cp, list_name=None):
 
 
 def mail_by_author(es_url, index_name, author, cp, list_name=None):
-    filters = _filters(list_name, cp.date_range)
+    filters = _filters(list_name, cp.date_range, cp.exclude_automated)
     filters.append({'match': {'author': {'query': author, 'operator': 'and'}}})
     q = {'bool': {'filter': filters}}
     return _es_search(es_url, index_name, _build_search(q, cp))
 
 
 def mail_by_email(es_url, index_name, email_addr, cp, list_name=None):
-    filters = _filters(list_name, cp.date_range)
+    filters = _filters(list_name, cp.date_range, cp.exclude_automated)
     filters.append({'term': {'email': email_addr.lower()}})
     q = {'bool': {'filter': filters}}
     return _es_search(es_url, index_name, _build_search(q, cp))
 
 
-def relevance_search(es_url, index_name, query_text, limit, page,
-                     list_name=None, date_range=None):
-    """Scored full-text search with subject boosting and highlighting."""
-    filters = _filters(list_name, date_range)
+def relevance_search(es_url, index_name, query_text, cp, list_name=None):
+    """Scored full-text search with subject boosting."""
+    filters = _filters(list_name, cp.date_range, cp.exclude_automated)
     query = {
         'bool': {
             'must': [{
@@ -238,21 +246,13 @@ def relevance_search(es_url, index_name, query_text, limit, page,
     if filters:
         query['bool']['filter'] = filters
     body = {
-        'size': limit,
-        'from': (page - 1) * limit,
-        'track_total_hits': True,
+        'size': cp.limit,
         'query': query,
-        'sort': [{'_score': 'desc'}, {'date': 'desc'}],
-        'highlight': {
-            'fields': {
-                'subject': {'number_of_fragments': 0},
-                'body': {'fragment_size': 150, 'number_of_fragments': 3},
-            },
-            'pre_tags': ['<em>'],
-            'post_tags': ['</em>'],
-        },
+        'sort': [{'_score': 'desc'}, {'date': 'desc'}, {'message_id': 'desc'}],
         '_source': ['list', 'message_id', 'date', 'author', 'email', 'subject'],
     }
+    if cp.search_after:
+        body['search_after'] = cp.search_after
     return _es_search(es_url, index_name, body)
 
 
@@ -309,28 +309,6 @@ def convert_hits(result, limit):
     return items, cursor
 
 
-def convert_relevance_hit(hit):
-    item = convert_hit(hit)
-    item['score'] = hit.get('_score')
-    highlights = hit.get('highlight', {})
-    if highlights:
-        item['highlights'] = {k: v for k, v in highlights.items()}
-    return item
-
-
-def convert_relevance_results(result, page, page_size):
-    hits = result['hits']['hits']
-    total_info = result['hits'].get('total', {})
-    total = total_info.get('value', 0) if isinstance(total_info, dict) else total_info
-    items = [convert_relevance_hit(h) for h in hits]
-    return {
-        'total': total,
-        'page': page,
-        'page_size': page_size,
-        'items': items,
-    }
-
-
 # --- Lambda handler ---
 
 def lambda_handler(event, context):
@@ -346,20 +324,19 @@ def lambda_handler(event, context):
         return not_found()
 
     cp = common_params(r.params)
-    page = max(1, extract_param(r.params, 'page', 1, int))
 
     if (m := re.match(r'.*/lists/([^/]+)/mail/search/relevance$', r.uri)) and 'q' in r.params:
         list_name = m.group(1)
         query_text = extract_param(r.params, 'q')
-        result = relevance_search(es_url, index_name, query_text, cp.limit, page,
-                                  list_name=list_name, date_range=cp.date_range)
-        return json_response(_to_json(convert_relevance_results(result, page, cp.limit)))
+        result = relevance_search(es_url, index_name, query_text, cp, list_name=list_name)
+        items, cursor = convert_hits(result, cp.limit)
+        return json_response(response_body(items, cursor))
 
     if r.uri.endswith('/mail/search/relevance') and 'q' in r.params:
         query_text = extract_param(r.params, 'q')
-        result = relevance_search(es_url, index_name, query_text, cp.limit, page,
-                                  date_range=cp.date_range)
-        return json_response(_to_json(convert_relevance_results(result, page, cp.limit)))
+        result = relevance_search(es_url, index_name, query_text, cp)
+        items, cursor = convert_hits(result, cp.limit)
+        return json_response(response_body(items, cursor))
 
     if (m := re.match(r'.*/lists/([^/]+)/mail/search$', r.uri)) and 'q' in r.params:
         list_name = m.group(1)

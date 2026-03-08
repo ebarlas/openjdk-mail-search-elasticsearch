@@ -102,6 +102,22 @@
             justify-content: flex-end;
         }
 
+        .toolbar .cb-label {
+            display: flex;
+            align-items: center;
+            gap: .35rem;
+            font-weight: normal;
+            margin-right: auto;
+            margin-bottom: 0;
+            cursor: pointer;
+            white-space: nowrap;
+        }
+
+        .toolbar .cb-label input[type="checkbox"] {
+            width: auto;
+            margin: 0;
+        }
+
         /* Status line */
         .status {
             margin-top: .5rem;
@@ -410,6 +426,7 @@
                     <option>openjfx-dev</option>
                     <option>panama-dev</option>
                     <option>quality-discuss</option>
+                    <option>security-dev</option>
                     <option>valhalla-dev</option>
                     <option>valhalla-spec-comments</option>
                     <option>valhalla-spec-experts</option>
@@ -465,6 +482,10 @@
         <!-- Actions -->
         <div class="row">
             <div class="col-12 toolbar">
+                <label class="cb-label">
+                    <input type="checkbox" id="hide-automated"/>
+                    Hide automated
+                </label>
                 <button type="button" id="reset">Reset</button>
                 <button type="submit" class="primary" id="search">Search</button>
             </div>
@@ -525,7 +546,7 @@
     const formEl = document.getElementById('search-form');
 
     // State of the last query (for pagination only; not tracked in URL/history)
-    let last = {url: null, cursor: null, page: null, total: null};
+    let last = {url: null, cursor: null};
 
     // ---------- Helpers ----------
     const qs = o => Object.entries(o)
@@ -609,7 +630,7 @@
     function clearTable() {
         resultsBody.innerHTML = '';
         nextBtn.hidden = true;
-        last = {url: null, cursor: null, page: null, total: null};
+        last = {url: null, cursor: null};
     }
 
     function renderRows(items) {
@@ -617,9 +638,7 @@
         for (const it of items) {
             const tr = document.createElement('tr');
 
-            // Mark SCM-sourced records
-            const subject = it.subject || '';
-            if (subject.includes('RFR:') || subject.includes('Integrated:') || subject.includes('Withdrawn:')) {
+            if ((it.id || '').includes('@github.com')) {
                 tr.classList.add('scm-source');
             }
 
@@ -741,12 +760,13 @@
     }
 
     // ---------- Build API URL ----------
-    function buildUrl({mode, list, q, author, email, from, to, order, limit, cursor, page}) {
+    function buildUrl({mode, list, q, author, email, from, to, order, limit, cursor, automated}) {
         const base = API_ROOT;
         const params = {order, limit};
         if (from) params.from = from;
         if (to) params.to = to;
         if (cursor) params.cursor = cursor;
+        if (automated === 'false') params.automated = 'false';
 
         let effectiveMode = mode;
         if (mode === 'text-search' && !q) {
@@ -763,11 +783,7 @@
                     const path = list
                         ? `${base}/lists/${encodeURIComponent(list)}/mail/search/relevance`
                         : `${base}/mail/search/relevance`;
-                    const rParams = {q, limit};
-                    if (page) rParams.page = page;
-                    if (from) rParams.from = from;
-                    if (to) rParams.to = to;
-                    return `${path}?${qs(rParams)}`;
+                    return `${path}?${qs({...params, q})}`;
                 }
                 const path = list ? `${base}/lists/${encodeURIComponent(list)}/mail/search` : `${base}/mail/search`;
                 return `${path}?${qs({...params, q})}`;
@@ -824,30 +840,21 @@
             const from = localToUtcZ(document.getElementById('from').value);
             const to = localToUtcZ(document.getElementById('to').value);
 
-            const isRelevance = mode === 'text-search' && q && order === 'relevance';
-            const page = isRelevance ? (next ? (last.page || 0) + 1 : 1) : undefined;
+            const automated = document.getElementById('hide-automated').checked ? 'false' : '';
 
             const url = buildUrl({
                 mode, list, q, author, email, from, to, order, limit,
-                cursor: next && !isRelevance ? last.cursor : null,
-                page
+                cursor: next ? last.cursor : null,
+                automated
             });
 
             const data = await fetchPage(url);
             const items = data.items || [];
             renderRows(items);
 
-            if (isRelevance) {
-                const total = data.total || 0;
-                const shown = resultsBody.children.length;
-                last = {url, cursor: null, page, total};
-                nextBtn.hidden = shown >= total;
-                setStatus(items.length ? `About ${total.toLocaleString()} result(s)` : 'No results');
-            } else {
-                last = {url, cursor: data.cursor || null, page: null, total: null};
-                nextBtn.hidden = !last.cursor;
-                setStatus(items.length ? `${items.length} result(s)` : 'No results');
-            }
+            last = {url, cursor: data.cursor || null};
+            nextBtn.hidden = !last.cursor;
+            setStatus(items.length ? `${items.length} result(s)` : 'No results');
         } catch (err) {
             setStatus(String(err.message || err), true);
             nextBtn.hidden = true;
@@ -866,7 +873,8 @@
             from: localToUtcZ(document.getElementById('from').value),
             to: localToUtcZ(document.getElementById('to').value),
             order: document.getElementById('order').value,
-            limit: document.getElementById('limit').value
+            limit: document.getElementById('limit').value,
+            automated: document.getElementById('hide-automated').checked ? 'false' : '',
         };
     }
 
@@ -887,7 +895,8 @@
             from: sp.get('from') || '',
             to: sp.get('to') || '',
             order: sp.get('order') || '',
-            limit: sp.get('limit') || ''
+            limit: sp.get('limit') || '',
+            automated: sp.get('automated') || '',
         };
     }
 
@@ -900,6 +909,7 @@
         document.getElementById('email').value = p.email || '';
         document.getElementById('order').value = p.order || 'desc';
         if (p.limit) document.getElementById('limit').value = p.limit;
+        document.getElementById('hide-automated').checked = p.automated === 'false';
 
         // Convert UTC Z times into local datetime-local inputs
         document.getElementById('from').value = utcZToLocalInput(p.from || '');
@@ -933,7 +943,8 @@
             !p.list && !p.q && !p.author && !p.email &&
             !p.from && !p.to &&
             (p.order === 'desc' || !p.order) &&
-            (!p.limit || p.limit === '25')
+            (!p.limit || p.limit === '25') &&
+            !p.automated
         );
     }
 
@@ -949,6 +960,7 @@
         document.getElementById('limit').value = '25';
         document.getElementById('from').value = '';
         document.getElementById('to').value = '';
+        document.getElementById('hide-automated').checked = false;
 
         clearTable();
         setStatus('');

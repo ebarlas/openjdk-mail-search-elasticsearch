@@ -403,6 +403,7 @@ MAILING_LISTS = [
     'openjfx-dev',
     'panama-dev',
     'quality-discuss',
+    'security-dev',
     'valhalla-dev',
     'valhalla-spec-comments',
     'valhalla-spec-experts',
