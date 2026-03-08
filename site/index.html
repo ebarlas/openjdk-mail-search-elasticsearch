@@ -638,7 +638,7 @@
         for (const it of items) {
             const tr = document.createElement('tr');
 
-            if ((it.id || '').includes('@github.com')) {
+            if ((it.id || '').includes('@github.com') || it.email === 'duke@openjdk.org') {
                 tr.classList.add('scm-source');
             }
 

@@ -201,9 +201,10 @@ class TestFilters(unittest.TestCase):
     def test_exclude_automated(self):
         f = _filters(exclude_automated=True)
         self.assertEqual(len(f), 1)
-        self.assertEqual(f[0], {'bool': {'must_not': [
-            {'wildcard': {'message_id': {'value': '*@github.com'}}},
-        ]}})
+        must_not = f[0]['bool']['must_not']
+        self.assertEqual(len(must_not), 2)
+        self.assertEqual(must_not[0], {'wildcard': {'message_id': {'value': '*@github.com'}}})
+        self.assertEqual(must_not[1], {'term': {'email': 'duke@openjdk.org'}})
 
     def test_exclude_automated_false(self):
         f = _filters(exclude_automated=False)
@@ -488,8 +489,8 @@ class TestSearchMailExcludeAutomated(unittest.TestCase):
         filters = body['query']['bool']['filter']
         auto_filter = [f for f in filters if 'bool' in f and 'must_not' in f.get('bool', {})]
         self.assertEqual(len(auto_filter), 1)
-        wildcard = auto_filter[0]['bool']['must_not'][0]
-        self.assertEqual(wildcard, {'wildcard': {'message_id': {'value': '*@github.com'}}})
+        must_not = auto_filter[0]['bool']['must_not']
+        self.assertEqual(len(must_not), 2)
 
     @patch('server.urlopen')
     def test_no_filter_by_default(self, mock_urlopen):
@@ -580,13 +581,36 @@ class TestGetStatus(unittest.TestCase):
                 'last_sync': {
                     'value': 1709769600000,
                     'value_as_string': '2025-03-07T00:00:00.000Z',
-                }
+                },
+                'last_update': {
+                    'value': None,
+                    'value_as_string': None,
+                },
             }
         }).encode()
         mock_urlopen.return_value = mock_response(body)
         last_check, last_update = get_status('http://es:9200', 'cp-index')
         self.assertEqual(last_check, '2025-03-07T00:00:00.000Z')
         self.assertEqual(last_update, '2025-03-07T00:00:00.000Z')
+
+    @patch('server.urlopen')
+    def test_distinct_update_timestamp(self, mock_urlopen):
+        body = json.dumps({
+            'aggregations': {
+                'last_sync': {
+                    'value': 1709769600000,
+                    'value_as_string': '2025-03-07T00:00:00.000Z',
+                },
+                'last_update': {
+                    'value': 1709856000000,
+                    'value_as_string': '2025-03-08T00:00:00.000Z',
+                },
+            }
+        }).encode()
+        mock_urlopen.return_value = mock_response(body)
+        last_check, last_update = get_status('http://es:9200', 'cp-index')
+        self.assertEqual(last_check, '2025-03-07T00:00:00.000Z')
+        self.assertEqual(last_update, '2025-03-08T00:00:00.000Z')
 
 
 ES_RELEVANCE_RESPONSE = {

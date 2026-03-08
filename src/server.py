@@ -192,6 +192,7 @@ def _filters(list_name=None, date_range=None, exclude_automated=False):
     if exclude_automated:
         f.append({'bool': {'must_not': [
             {'wildcard': {'message_id': {'value': '*@github.com'}}},
+            {'term': {'email': 'duke@openjdk.org'}},
         ]}})
     return f
 
