@@ -290,7 +290,7 @@ def _format_month(date_str):
 def convert_hit(hit):
     src = hit['_source']
     date = src.get('date', '')
-    return {
+    item = {
         'list': src.get('list', ''),
         'month': _format_month(date),
         'id': src.get('message_id', hit['_id']),
@@ -299,6 +299,9 @@ def convert_hit(hit):
         'email': src.get('email', ''),
         'subject': src.get('subject', ''),
     }
+    if hit.get('_score') is not None:
+        item['score'] = hit['_score']
+    return item
 
 
 def convert_hits(result, limit):

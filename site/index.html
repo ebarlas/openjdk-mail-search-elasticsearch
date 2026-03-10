@@ -188,6 +188,35 @@
             margin-top: .75rem;
         }
 
+        /* Score indicator (relevance mode) */
+        .score-cell {
+            display: flex;
+            align-items: center;
+            gap: .4rem;
+        }
+
+        .score-bar-track {
+            width: 50px;
+            height: 6px;
+            background: rgba(127, 127, 127, .15);
+            border-radius: 3px;
+            overflow: hidden;
+            flex-shrink: 0;
+        }
+
+        .score-bar {
+            height: 100%;
+            border-radius: 3px;
+            background: hsl(212 80% 55%);
+        }
+
+        .score-num {
+            font-size: 12px;
+            opacity: .65;
+            white-space: nowrap;
+            font-variant-numeric: tabular-nums;
+        }
+
         /* Legend for automated records */
         .legend {
             margin-top: 1rem;
@@ -508,6 +537,7 @@
                 <th>Subject</th>
                 <th>Email</th>
                 <th class="nowrap">Date</th>
+                <th id="th-score" class="nowrap" hidden>Score</th>
                 <th></th>
             </tr>
             </thead>
@@ -546,7 +576,7 @@
     const formEl = document.getElementById('search-form');
 
     // State of the last query (for pagination only; not tracked in URL/history)
-    let last = {url: null, cursor: null};
+    let last = {url: null, cursor: null, maxScore: 0};
 
     // ---------- Helpers ----------
     const qs = o => Object.entries(o)
@@ -630,10 +660,11 @@
     function clearTable() {
         resultsBody.innerHTML = '';
         nextBtn.hidden = true;
-        last = {url: null, cursor: null};
+        last = {url: null, cursor: null, maxScore: 0};
+        document.getElementById('th-score').hidden = true;
     }
 
-    function renderRows(items) {
+    function renderRows(items, maxScore) {
         const frag = document.createDocumentFragment();
         for (const it of items) {
             const tr = document.createElement('tr');
@@ -715,6 +746,29 @@
             timeEl.textContent = formatLocal(it.date);
             tdDate.appendChild(timeEl);
             tr.appendChild(tdDate);
+
+            // Score (visible only during relevance sort)
+            if (maxScore > 0 && it.score != null) {
+                const tdScore = document.createElement('td');
+                const wrap = document.createElement('div');
+                wrap.className = 'score-cell';
+
+                const track = document.createElement('div');
+                track.className = 'score-bar-track';
+                const bar = document.createElement('div');
+                bar.className = 'score-bar';
+                bar.style.width = `${(it.score / maxScore) * 100}%`;
+                track.appendChild(bar);
+                wrap.appendChild(track);
+
+                const num = document.createElement('span');
+                num.className = 'score-num';
+                num.textContent = it.score.toFixed(1);
+                wrap.appendChild(num);
+
+                tdScore.appendChild(wrap);
+                tr.appendChild(tdScore);
+            }
 
             // HyperKitty external link
             const tdLink = document.createElement('td');
@@ -851,9 +905,17 @@
 
             const data = await fetchPage(url);
             const items = data.items || [];
-            renderRows(items);
 
-            last = {url, cursor: data.cursor || null};
+            const hasScores = items.length > 0 && items[0].score != null;
+            if (hasScores) {
+                const batchMax = Math.max(...items.map(it => it.score || 0));
+                if (!next || batchMax > last.maxScore) last.maxScore = batchMax;
+                document.getElementById('th-score').hidden = false;
+            }
+
+            renderRows(items, last.maxScore);
+
+            last = {url, cursor: data.cursor || null, maxScore: last.maxScore};
             nextBtn.hidden = !last.cursor;
             setStatus(items.length ? `${items.length} result(s)` : 'No results');
         } catch (err) {
