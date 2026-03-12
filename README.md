@@ -8,6 +8,40 @@ Replaces the DynamoDB backend with Elasticsearch while keeping the same API and 
 
 https://openjdk.barlasgarden.com
 
+## Architecture
+
+```
+  Users
+    │
+    ▼
+┌───────┐              ┌──────────────────────────┐
+│  WAF  │              │  Lambda Scheduled Sync   │
+└───┬───┘              └─────────────┬────────────┘
+    │                                │
+    ▼                                │ bulk index
+┌────────────┐                       │
+│ CloudFront │                       │
+└─────┬──────┘                       │
+      │ /api/*                       │
+      ▼                              │
+┌─────────────────────┐              │
+│ Lambda API Server   │              │
+└──────────┬──────────┘              │
+           │ queries                 │
+           ▼                         ▼
+     ┌─── EC2 ──────────────────────────┐
+     │  ┌─── ECS ────────────────────┐  │
+     │  │      Elasticsearch         │  │
+     │  └────────────────────────────┘  │
+     └───────────────┬──────────────────┘
+                     │ attached
+               ┌─────┴──────┐
+               │ EBS Volume │
+               └────────────┘
+```
+
+WAF and CloudFront handle incoming traffic. CloudFront routes `/api/*` requests to the Lambda API Server, which queries Elasticsearch. The Lambda Scheduled Sync periodically downloads mbox archives from `mail.openjdk.org` and bulk-indexes them into Elasticsearch. Elasticsearch runs as a single-node ECS task on an EC2 instance, with data persisted on an attached EBS volume.
+
 ## Project
 
 * `src/sync.py` - CLI/Lambda for seeding and syncing mailing list records into Elasticsearch
