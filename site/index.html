@@ -805,6 +805,7 @@
         if (mode === 'text-search') {
             relevanceOpt.hidden = false;
             relevanceOpt.disabled = false;
+            document.getElementById('order').value = 'relevance';
         } else {
             if (document.getElementById('order').value === 'relevance') {
                 document.getElementById('order').value = 'desc';
@@ -970,7 +971,8 @@
         document.getElementById('q').value = p.q || '';
         document.getElementById('author').value = p.author || '';
         document.getElementById('email').value = p.email || '';
-        document.getElementById('order').value = p.order || 'desc';
+        const defaultOrder = mode === 'text-search' ? 'relevance' : 'desc';
+        document.getElementById('order').value = p.order || defaultOrder;
         if (p.limit) document.getElementById('limit').value = p.limit;
         document.getElementById('hide-automated').checked = p.automated === 'false';
 
