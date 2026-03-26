@@ -365,8 +365,10 @@ def sync_list(list_name, es_url, index_name, start_ym, checkpoint_index,
 
         logger.info(
             "%d-%02d: %d parsed, %d indexed, %d existing, %d skipped, %d errors"
+            " | %dKB in %.1fs"
             " | cumulative: %d indexed, %d existing | %dms",
             year, month, len(messages), ok, existing, skipped, err,
+            compressed_size / 1024, dl_elapsed,
             cumulative_indexed, cumulative_existing, elapsed * 1000,
         )
 
